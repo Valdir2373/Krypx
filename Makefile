@@ -49,6 +49,8 @@ C_SOURCES   := kernel/kernel.c \
                drivers/vga.c \
                drivers/keyboard.c \
                drivers/ide.c \
+               drivers/pci.c \
+               drivers/e1000.c \
                mm/pmm.c \
                mm/vmm.c \
                mm/heap.c \
@@ -61,7 +63,18 @@ C_SOURCES   := kernel/kernel.c \
                drivers/framebuffer.c \
                gui/canvas.c \
                gui/window.c \
-               gui/desktop.c
+               gui/desktop.c \
+               net/net.c \
+               net/ethernet.c \
+               net/arp.c \
+               net/ip.c \
+               net/icmp.c \
+               net/udp.c \
+               net/tcp.c \
+               net/dhcp.c \
+               net/dns.c \
+               net/socket.c \
+               net/netif.c
 
 # Objetos gerados
 ASM_OBJECTS := $(ASM_SOURCES:.asm=.o)
@@ -96,6 +109,16 @@ run: iso
 	    -vga std \
 	    -boot d \
 	    -serial stdio \
+	    -no-reboot \
+	    -no-shutdown
+
+# Roda com rede (e1000)
+run-net: iso
+	$(QEMU) -cdrom Krypx.iso -m 256M \
+	    -vga std \
+	    -boot d \
+	    -serial stdio \
+	    -netdev user,id=net0 -device e1000,netdev=net0 \
 	    -no-reboot \
 	    -no-shutdown
 

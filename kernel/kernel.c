@@ -22,7 +22,9 @@
 #include <proc/scheduler.h>
 #include <kernel/syscall.h>
 #include <drivers/framebuffer.h>
+#include <drivers/pci.h>
 #include <gui/desktop.h>
+#include <net/netif.h>
 
 /* ============================================================
  * Debug via porta serial COM1 (115200 baud)
@@ -250,7 +252,23 @@ void kernel_main(uint32_t magic, uint32_t mbi_addr) {
     scheduler_enable();
     log_ok("Syscalls via int 0x80 registradas");
 
-    /* === 13. Framebuffer + GUI === */
+    /* === 13. Rede (PCI + e1000 + TCP/IP + DHCP) === */
+    log_info("Inicializando pilha de rede...");
+    pci_init();
+    netif_init();
+    if (netif_is_up()) {
+        vga_set_color(VGA_COLOR_GREEN, VGA_COLOR_BLACK);
+        vga_puts("[OK] Rede configurada via DHCP\n");
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+        ser_puts("[NET] Rede OK via DHCP\r\n");
+    } else {
+        vga_set_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+        vga_puts("[WARN] Sem rede (sem NIC ou DHCP falhou)\n");
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+        ser_puts("[NET] Sem rede\r\n");
+    }
+
+    /* === 14. Framebuffer + GUI === */
     log_info("Inicializando framebuffer VBE...");
     if (fb_init(mbi)) {
         log_ok("Framebuffer VBE pronto — iniciando GUI");

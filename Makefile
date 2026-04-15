@@ -48,6 +48,7 @@ C_SOURCES   := kernel/kernel.c \
                kernel/timer.c \
                drivers/vga.c \
                drivers/keyboard.c \
+               drivers/mouse.c \
                drivers/ide.c \
                drivers/pci.c \
                drivers/e1000.c \

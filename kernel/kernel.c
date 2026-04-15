@@ -12,6 +12,7 @@
 #include <kernel/idt.h>
 #include <kernel/timer.h>
 #include <drivers/keyboard.h>
+#include <drivers/mouse.h>
 #include <mm/pmm.h>
 #include <mm/vmm.h>
 #include <mm/heap.h>
@@ -170,6 +171,11 @@ void kernel_main(uint32_t magic, uint32_t mbi_addr) {
     log_info("Inicializando teclado PS/2...");
     keyboard_init();
     log_ok("Teclado PS/2 ativo. IRQ1 habilitado");
+
+    /* === 6b. Mouse PS/2 === */
+    log_info("Inicializando mouse PS/2...");
+    mouse_init();
+    log_ok("Mouse PS/2 ativo. IRQ12 habilitado");
 
     /* === 7. PMM === */
     log_info("Inicializando PMM (Physical Memory Manager)...");

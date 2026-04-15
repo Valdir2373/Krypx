@@ -13,6 +13,17 @@
 #include <lib/string.h>
 #include <types.h>
 
+/* Converte bytes para string "NNK" */
+static void mem_to_str(uint32_t bytes, char *out) {
+    uint32_t kb = bytes / 1024;
+    if (kb == 0) { out[0]='<'; out[1]='1'; out[2]='K'; out[3]='\0'; return; }
+    char tmp[12]; int len = 0;
+    while (kb > 0) { tmp[len++] = (char)('0' + kb%10); kb /= 10; }
+    int i;
+    for (i = 0; i < len; i++) out[i] = tmp[len-1-i];
+    out[len] = 'K'; out[len+1] = '\0';
+}
+
 #define TM_W  480
 #define TM_H  320
 
@@ -47,11 +58,12 @@ static void tm_on_paint(window_t *win) {
     /* Cabeçalho da tabela */
     canvas_fill_rect(bx, by, w, CHAR_HEIGHT + 8, 0x00263545);
     int hx = bx + 4, hy = by + 4;
-    canvas_draw_string(hx,      hy, "PID", 0x0074B9FF, COLOR_TRANSPARENT);
-    canvas_draw_string(hx+40,   hy, "Nome                  ", 0x0074B9FF, COLOR_TRANSPARENT);
-    canvas_draw_string(hx+220,  hy, "Estado  ", 0x0074B9FF, COLOR_TRANSPARENT);
-    canvas_draw_string(hx+300,  hy, "Prio", 0x0074B9FF, COLOR_TRANSPARENT);
-    canvas_draw_string(hx+350,  hy, "UID", 0x0074B9FF, COLOR_TRANSPARENT);
+    canvas_draw_string(hx,      hy, "PID",    0x0074B9FF, COLOR_TRANSPARENT);
+    canvas_draw_string(hx+40,   hy, "Nome",   0x0074B9FF, COLOR_TRANSPARENT);
+    canvas_draw_string(hx+200,  hy, "Estado", 0x0074B9FF, COLOR_TRANSPARENT);
+    canvas_draw_string(hx+280,  hy, "Prio",   0x0074B9FF, COLOR_TRANSPARENT);
+    canvas_draw_string(hx+320,  hy, "UID",    0x0074B9FF, COLOR_TRANSPARENT);
+    canvas_draw_string(hx+360,  hy, "RAM",    0x0074B9FF, COLOR_TRANSPARENT);
 
     /* Linhas de processos */
     int y = by + CHAR_HEIGHT + 12;
@@ -64,17 +76,20 @@ static void tm_on_paint(window_t *win) {
         uint32_t row_col = (row % 2 == 0) ? 0x001A2433 : 0x001E2A3A;
         canvas_fill_rect(bx, y-2, w, CHAR_HEIGHT+4, row_col);
 
-        char pidstr[8], priostr[4], uidstr[8];
+        char pidstr[8], priostr[4], uidstr[8], memstr[12];
         uint_to_str(p->pid,      pidstr);
         uint_to_str(p->priority, priostr);
         uint_to_str(p->uid,      uidstr);
+        mem_to_str(p->mem_size,  memstr);
 
         uint32_t col = (p->state == PROC_RUNNING) ? 0x0000B894 : 0x00DFE6E9;
-        canvas_draw_string(bx+4,   y, pidstr,             col, COLOR_TRANSPARENT);
-        canvas_draw_string(bx+44,  y, p->name,            col, COLOR_TRANSPARENT);
-        canvas_draw_string(bx+224, y, state_name(p->state),col, COLOR_TRANSPARENT);
-        canvas_draw_string(bx+304, y, priostr,            col, COLOR_TRANSPARENT);
-        canvas_draw_string(bx+354, y, uidstr,             col, COLOR_TRANSPARENT);
+        canvas_draw_string(bx+4,   y, pidstr,              col, COLOR_TRANSPARENT);
+        canvas_draw_string(bx+44,  y, p->name,             col, COLOR_TRANSPARENT);
+        canvas_draw_string(bx+204, y, state_name(p->state),col, COLOR_TRANSPARENT);
+        canvas_draw_string(bx+284, y, priostr,             col, COLOR_TRANSPARENT);
+        canvas_draw_string(bx+324, y, uidstr,              col, COLOR_TRANSPARENT);
+        if (p->mem_size > 0)
+            canvas_draw_string(bx+364, y, memstr, 0x00FDCB6E, COLOR_TRANSPARENT);
 
         y += CHAR_HEIGHT + 4;
         row++;
@@ -126,4 +141,6 @@ void task_manager_open(void) {
     if (!tm_win) return;
     tm_win->bg_color = 0x001A2433;
     tm_win->on_paint = tm_on_paint;
+    { process_t *p = process_create_app("TaskManager", 32 * 1024);
+      if (p) tm_win->proc_pid = p->pid; }
 }

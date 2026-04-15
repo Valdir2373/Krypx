@@ -103,6 +103,44 @@ void process_exit(int32_t code) {
 
 process_t *process_current(void) { return current_process; }
 
+process_t *process_create_app(const char *name, uint32_t mem_bytes) {
+    process_t *p = alloc_process();
+    if (!p) return 0;
+
+    memset(p, 0, sizeof(process_t));
+    p->pid        = next_pid++;
+    p->state      = PROC_RUNNING;  /* Visível no Task Manager como "Rodando" */
+    p->priority   = 1;
+    strncpy(p->name, name, 63);
+    p->uid        = 0;             /* root */
+    p->page_dir   = vmm_get_current_dir();
+    p->ctx.cr3    = (uint32_t)p->page_dir;
+    p->ctx.eflags = 0x202;
+
+    /* Aloca bloco de memória representando o working set do app */
+    p->mem_block = kmalloc(mem_bytes);
+    p->mem_size  = p->mem_block ? mem_bytes : 0;
+
+    /* NÃO adiciona ao run_queue — é apenas um tracker de recursos */
+    return p;
+}
+
+void process_kill(uint32_t pid) {
+    if (pid == 0) return;   /* Nunca matar o kernel */
+    uint32_t i;
+    for (i = 0; i < MAX_PROCESSES; i++) {
+        if (process_table[i].pid == pid && process_table[i].state != PROC_UNUSED) {
+            if (process_table[i].mem_block) {
+                kfree(process_table[i].mem_block);
+                process_table[i].mem_block = 0;
+            }
+            process_table[i].state = PROC_UNUSED;
+            process_table[i].pid   = 0;
+            return;
+        }
+    }
+}
+
 process_t *process_get(uint32_t pid) {
     uint32_t i;
     for (i = 0; i < MAX_PROCESSES; i++) {

@@ -8,8 +8,10 @@
 #include <gui/window.h>
 #include <drivers/framebuffer.h>
 #include <drivers/keyboard.h>
+#include <drivers/mouse.h>
 #include <kernel/timer.h>
 #include <security/users.h>
+#include <proc/process.h>
 #include <apps/calculator.h>
 #include <apps/task_manager.h>
 #include <apps/about.h>
@@ -166,8 +168,13 @@ static void draw_taskbar(void) {
     canvas_draw_string(18, ty + 12, "Menu", COLOR_WHITE, COLOR_TRANSPARENT);
 
     /* Botão Terminal */
-    canvas_fill_rounded_rect(86, ty + 6, 90, 28, 5, 0x00333333);
+    bool term_min = terminal_win && (terminal_win->flags & WIN_MINIMIZED);
+    uint32_t term_col = term_min ? 0x00555566 : 0x00333333;
+    canvas_fill_rounded_rect(86, ty + 6, 90, 28, 5, term_col);
     canvas_draw_string(96, ty + 12, "Terminal", 0x00DFE6E9, COLOR_TRANSPARENT);
+
+    /* Botões de janelas minimizadas */
+    wm_draw_taskbar_entries(184, ty + 6, 110, 28, fb.width - 220);
 
     /* Relógio (usa timer_get_seconds) */
     uint32_t secs  = timer_get_seconds();
@@ -228,13 +235,29 @@ static void draw_menu(void) {
     }
 }
 
-/* Verifica clique no menu e abre o app */
-static void __attribute__((unused)) menu_handle_click(int x, int y) {
+/* Geometria do menu (recalculada a cada frame) */
+static void menu_geometry(int *mx_out, int *my_out, int *mh_out, int *nitems_out) {
     int ty = TASKBAR_Y(fb.height);
     int nitems = 0;
     while (menu_items[nitems].name) nitems++;
     int mh = nitems * MENU_ITEM_H + 8;
-    int mx = 8, my = ty - mh - 4;
+    *mx_out    = 8;
+    *my_out    = ty - mh - 4;
+    *mh_out    = mh;
+    *nitems_out = nitems;
+}
+
+/* Verifica se ponto (x,y) está dentro da área do menu */
+static bool is_in_menu(int x, int y) {
+    int mx, my, mh, nitems;
+    menu_geometry(&mx, &my, &mh, &nitems);
+    return (x >= mx && x <= mx + MENU_W && y >= my && y <= my + mh);
+}
+
+/* Trata clique dentro do menu */
+static void menu_handle_click(int x, int y) {
+    int mx, my, mh, nitems;
+    menu_geometry(&mx, &my, &mh, &nitems);
 
     if (x < mx || x > mx + MENU_W || y < my || y > my + mh) {
         menu_open = false; return;
@@ -244,6 +267,31 @@ static void __attribute__((unused)) menu_handle_click(int x, int y) {
         menu_items[idx].open();
         menu_open = false;
     }
+}
+
+/* Trata clique na área da taskbar */
+static void desktop_taskbar_click(int x, int y) {
+    int ty = TASKBAR_Y(fb.height);
+
+    /* Botão Menu */
+    if (x >= 8 && x <= 78 && y >= ty + 6 && y <= ty + 34) {
+        menu_open = !menu_open;
+        return;
+    }
+    /* Botão Terminal */
+    if (x >= 86 && x <= 176 && y >= ty + 6 && y <= ty + 34) {
+        if (terminal_win) {
+            if (terminal_win->flags & WIN_MINIMIZED) {
+                terminal_win->flags &= ~WIN_MINIMIZED;
+                wm_focus(terminal_win);
+            } else {
+                terminal_win->flags |= WIN_MINIMIZED;
+            }
+        }
+        return;
+    }
+    /* Botões de janelas minimizadas */
+    wm_taskbar_entry_click(x, y, 184, ty + 6, 110, 28, (int)fb.width - 220);
 }
 
 void desktop_render(void) {
@@ -274,6 +322,9 @@ void desktop_init(void) {
         term_puts("Krypx Terminal v0.1\n");
         term_puts("Digite 'help' para ver comandos\n");
         term_puts("\n");
+        /* Processo para o terminal */
+        { process_t *p = process_create_app("Terminal", 128 * 1024);
+          if (p) terminal_win->proc_pid = p->pid; }
     }
 
     /* Cria janela de boas-vindas */
@@ -391,37 +442,72 @@ static void login_screen(void) {
 }
 
 void desktop_run(void) {
-    /* Tela de login antes do desktop */
     login_screen();
 
-    uint32_t last_render = 0;
+    uint32_t last_render  = 0;
+    uint8_t  prev_btns    = 0;
 
     while (1) {
-        /* Renderiza a ~30 FPS (a cada ~33 ms) */
+        /* Renderiza a ~30 FPS */
         uint32_t now = timer_get_ticks();
         if (now - last_render >= 33) {
             last_render = now;
-            desktop_render();   /* inclui wm_render() e fb_swap() internamente */
+            desktop_render();
         }
 
-        /* Processa teclas */
-        char key = keyboard_getchar();
-        if (key) {
-            if (key == '\x1B' || key == 'm') {
-                /* Esc ou 'm': toggle menu */
-                menu_open = !menu_open;
-            } else if (key == '1' && menu_open) {
-                calculator_open(); menu_open = false;
-            } else if (key == '2' && menu_open) {
-                task_manager_open(); menu_open = false;
-            } else if (key == '3' && menu_open) {
-                network_manager_open(); menu_open = false;
-            } else if (key == '4' && menu_open) {
-                settings_open(); menu_open = false;
-            } else if (key == '5' && menu_open) {
-                about_open(); menu_open = false;
-            } else {
-                wm_key_event(key);
+        /* ---- Mouse ---- */
+        {
+            int mx = mouse_get_x();
+            int my = mouse_get_y();
+            uint8_t btns = mouse_get_buttons();
+            int ty = (int)fb.height - TASKBAR_HEIGHT;
+
+            /* Sempre atualiza posição do cursor */
+            wm_mouse_move(mx, my);
+
+            /* Botão esquerdo acabou de ser pressionado */
+            if ((btns & 1) && !(prev_btns & 1)) {
+                if (menu_open && is_in_menu(mx, my)) {
+                    /* Clique dentro do menu */
+                    menu_handle_click(mx, my);
+                } else if (my >= ty) {
+                    /* Clique na taskbar */
+                    if (menu_open) menu_open = false;
+                    desktop_taskbar_click(mx, my);
+                } else {
+                    /* Clique no desktop ou janela */
+                    if (menu_open) { menu_open = false; }
+                    wm_mouse_down(mx, my, 0);
+                }
+            }
+
+            /* Botão esquerdo solto */
+            if (!(btns & 1) && (prev_btns & 1)) {
+                wm_mouse_up(mx, my, 0);
+            }
+
+            prev_btns = btns;
+        }
+
+        /* ---- Teclado ---- */
+        {
+            char key = keyboard_getchar();
+            if (key) {
+                if (key == '\x1B' || key == 'm') {
+                    menu_open = !menu_open;
+                } else if (key == '1' && menu_open) {
+                    calculator_open();     menu_open = false;
+                } else if (key == '2' && menu_open) {
+                    task_manager_open();   menu_open = false;
+                } else if (key == '3' && menu_open) {
+                    network_manager_open();menu_open = false;
+                } else if (key == '4' && menu_open) {
+                    settings_open();       menu_open = false;
+                } else if (key == '5' && menu_open) {
+                    about_open();          menu_open = false;
+                } else {
+                    wm_key_event(key);
+                }
             }
         }
 

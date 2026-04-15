@@ -6,6 +6,7 @@
 #include <apps/settings.h>
 #include <gui/window.h>
 #include <gui/canvas.h>
+#include <proc/process.h>
 #include <drivers/framebuffer.h>
 #include <security/users.h>
 #include <kernel/timer.h>
@@ -132,7 +133,7 @@ static void set_on_paint(window_t *win) {
             canvas_draw_string(cx, cy, "Sobre o Krypx", lbl, COLOR_TRANSPARENT); cy += 24;
             canvas_draw_string(cx, cy, "Krypx OS v" KRYPX_VERSION_STR, val, COLOR_TRANSPARENT); cy += 20;
             canvas_draw_string(cx, cy, "Custom Bare-Metal OS", val, COLOR_TRANSPARENT); cy += 20;
-            canvas_draw_string(cx, cy, "(C) 2026 Valdir2373", 0x00636E72, COLOR_TRANSPARENT); cy += 20;
+            canvas_draw_string(cx, cy, "Zero deps. Zero libc. Puro metal.", 0x00636E72, COLOR_TRANSPARENT); cy += 20;
             canvas_draw_string(cx, cy, "Zero deps, Zero libc", 0x00636E72, COLOR_TRANSPARENT); cy += 20;
             break;
         }
@@ -159,4 +160,6 @@ void settings_open(void) {
     set_win->bg_color   = 0x001E272E;
     set_win->on_paint   = set_on_paint;
     set_win->on_keydown = set_on_keydown;
+    { process_t *p = process_create_app("Configuracoes", 32 * 1024);
+      if (p) set_win->proc_pid = p->pid; }
 }

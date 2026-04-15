@@ -7,6 +7,7 @@
 #include <gui/window.h>
 #include <gui/canvas.h>
 #include <drivers/framebuffer.h>
+#include <proc/process.h>
 #include <lib/string.h>
 #include <types.h>
 
@@ -212,4 +213,7 @@ void calculator_open(void) {
     calc_win->bg_color   = 0x001E272E;
     calc_win->on_paint   = calc_on_paint;
     calc_win->on_keydown = calc_on_keydown;
+    /* Aloca processo e RAM para este app */
+    { process_t *p = process_create_app("Calculadora", 64 * 1024);
+      if (p) calc_win->proc_pid = p->pid; }
 }

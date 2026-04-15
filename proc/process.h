@@ -54,6 +54,10 @@ typedef struct process {
     uint32_t      uid;
     int32_t       exit_code;
 
+    /* RAM alocada para este processo (apps GUI) */
+    void         *mem_block;    /* kmalloc'd — NULL para kernel */
+    uint32_t      mem_size;     /* Bytes alocados */
+
     struct process *parent;
     struct process *next;       /* Lista encadeada no scheduler */
 } process_t;
@@ -75,5 +79,11 @@ process_t *process_current(void);
 
 /* Retorna processo por PID */
 process_t *process_get(uint32_t pid);
+
+/* Cria um processo representando uma aplicação GUI (aloca RAM, não entra no scheduler) */
+process_t *process_create_app(const char *name, uint32_t mem_bytes);
+
+/* Mata um processo e libera seus recursos de memória */
+void process_kill(uint32_t pid);
 
 #endif /* _PROCESS_H */

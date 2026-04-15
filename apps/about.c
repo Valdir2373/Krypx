@@ -6,6 +6,7 @@
 #include <apps/about.h>
 #include <gui/window.h>
 #include <gui/canvas.h>
+#include <proc/process.h>
 #include <drivers/framebuffer.h>
 #include <mm/pmm.h>
 #include <kernel/timer.h>
@@ -87,7 +88,7 @@ static void about_on_paint(window_t *win) {
     /* Separador */
     canvas_draw_line(bx+8, y, bx+w-8, y, 0x00636E72);  y += 12;
 
-    canvas_draw_string(cx-96, y, "(C) 2026 Valdir2373 - Todos os direitos", 0x00636E72, COLOR_TRANSPARENT);
+    canvas_draw_string(cx-56, y, "Krypx — Custom Bare-Metal OS", 0x00636E72, COLOR_TRANSPARENT);
 }
 
 void about_open(void) {
@@ -100,4 +101,6 @@ void about_open(void) {
     if (!about_win) return;
     about_win->bg_color = 0x001E272E;
     about_win->on_paint = about_on_paint;
+    { process_t *p = process_create_app("Sobre", 16 * 1024);
+      if (p) about_win->proc_pid = p->pid; }
 }

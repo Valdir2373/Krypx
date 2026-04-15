@@ -6,6 +6,7 @@
 #include <apps/network_manager.h>
 #include <gui/window.h>
 #include <gui/canvas.h>
+#include <proc/process.h>
 #include <drivers/framebuffer.h>
 #include <drivers/e1000.h>
 #include <net/net.h>
@@ -127,4 +128,6 @@ void network_manager_open(void) {
     if (!nm_win) return;
     nm_win->bg_color = 0x001E272E;
     nm_win->on_paint = nm_on_paint;
+    { process_t *p = process_create_app("Rede", 48 * 1024);
+      if (p) nm_win->proc_pid = p->pid; }
 }

@@ -231,33 +231,112 @@ static const uint8_t font8x16[95][16] = {
      {0,0x76,0xDC,0,0,0,0,0,0,0,0,0,0,0,0,0},
 };
 
+/* Global font scale — 1 = 8x16 (terminal), 2 = 16x32 (UI default) */
+static int g_font_scale = 1;
+
+void canvas_set_font_scale(int s) { if (s >= 1 && s <= 4) g_font_scale = s; }
+int  canvas_get_font_scale(void)  { return g_font_scale; }
+
+/* Extended glyphs for common PT-BR characters (stored as 8x16 bitmaps).
+   Index mapping: 0=ç 1=Ç 2=ã 3=Ã 4=â 5=Â 6=á 7=Á 8=à 9=À
+                  10=ê 11=Ê 12=é 13=É 14=è 15=È 16=í 17=Í
+                  18=ó 19=Ó 20=ô 21=Ô 22=õ 23=Õ 24=ú 25=Ú 26=ñ 27=Ñ */
+static const uint8_t font_ptbr[28][16] = {
+    /* ç */ {0,0,0,0x3C,0x66,0xC0,0xC0,0xC0,0x66,0x3C,0x08,0x38,0,0,0,0},
+    /* Ç */ {0,0x3C,0x66,0xC2,0xC0,0xC0,0xC0,0xC2,0x66,0x3C,0x08,0x38,0,0,0,0},
+    /* ã */ {0,0x76,0xDC,0,0x78,0x0C,0x7C,0xCC,0xCC,0x76,0,0,0,0,0,0},
+    /* Ã */ {0,0x76,0xDC,0,0x10,0x38,0x6C,0xC6,0xFE,0xC6,0,0,0,0,0,0},
+    /* â */ {0,0x30,0x18,0,0x78,0x0C,0x7C,0xCC,0xCC,0x76,0,0,0,0,0,0},
+    /* Â */ {0,0x10,0x28,0,0x10,0x38,0x6C,0xC6,0xFE,0xC6,0,0,0,0,0,0},
+    /* á */ {0,0x18,0x30,0,0x78,0x0C,0x7C,0xCC,0xCC,0x76,0,0,0,0,0,0},
+    /* Á */ {0,0x18,0x30,0,0x10,0x38,0x6C,0xC6,0xFE,0xC6,0,0,0,0,0,0},
+    /* à */ {0,0x20,0x18,0,0x78,0x0C,0x7C,0xCC,0xCC,0x76,0,0,0,0,0,0},
+    /* À */ {0,0x20,0x18,0,0x10,0x38,0x6C,0xC6,0xFE,0xC6,0,0,0,0,0,0},
+    /* ê */ {0,0x30,0x18,0,0x7C,0xC6,0xFE,0xC0,0xC0,0x7C,0,0,0,0,0,0},
+    /* Ê */ {0,0x10,0x28,0,0xFE,0xC0,0xF8,0xC0,0xC0,0xFE,0,0,0,0,0,0},
+    /* é */ {0,0x18,0x30,0,0x7C,0xC6,0xFE,0xC0,0xC0,0x7C,0,0,0,0,0,0},
+    /* É */ {0,0x18,0x30,0,0xFE,0xC0,0xF8,0xC0,0xC0,0xFE,0,0,0,0,0,0},
+    /* è */ {0,0x20,0x18,0,0x7C,0xC6,0xFE,0xC0,0xC0,0x7C,0,0,0,0,0,0},
+    /* È */ {0,0x20,0x18,0,0xFE,0xC0,0xF8,0xC0,0xC0,0xFE,0,0,0,0,0,0},
+    /* í */ {0,0x18,0x30,0,0x38,0x18,0x18,0x18,0x18,0x3C,0,0,0,0,0,0},
+    /* Í */ {0,0x18,0x30,0,0x3C,0x18,0x18,0x18,0x18,0x3C,0,0,0,0,0,0},
+    /* ó */ {0,0x18,0x30,0,0x7C,0xC6,0xC6,0xC6,0xC6,0x7C,0,0,0,0,0,0},
+    /* Ó */ {0,0x18,0x30,0,0x38,0x6C,0xC6,0xC6,0x6C,0x38,0,0,0,0,0,0},
+    /* ô */ {0,0x30,0x18,0,0x7C,0xC6,0xC6,0xC6,0xC6,0x7C,0,0,0,0,0,0},
+    /* Ô */ {0,0x10,0x28,0,0x38,0x6C,0xC6,0xC6,0x6C,0x38,0,0,0,0,0,0},
+    /* õ */ {0,0x76,0xDC,0,0x7C,0xC6,0xC6,0xC6,0xC6,0x7C,0,0,0,0,0,0},
+    /* Õ */ {0,0x76,0xDC,0,0x38,0x6C,0xC6,0xC6,0x6C,0x38,0,0,0,0,0,0},
+    /* ú */ {0,0x18,0x30,0,0xCC,0xCC,0xCC,0xCC,0xCC,0x76,0,0,0,0,0,0},
+    /* Ú */ {0,0x18,0x30,0,0xC6,0xC6,0xC6,0xC6,0xC6,0x7C,0,0,0,0,0,0},
+    /* ñ */ {0,0x76,0xDC,0,0xDC,0x66,0x66,0x66,0x66,0x66,0,0,0,0,0,0},
+    /* Ñ */ {0,0x76,0xDC,0,0xC6,0xE6,0xF6,0xDE,0xCE,0xC6,0,0,0,0,0,0},
+};
+
+/* Map ISO-8859-1 (Latin-1) chars to font_ptbr index, or -1 if not found */
+static int ptbr_index(unsigned char c) {
+    switch (c) {
+        case 0xE7: return 0;  case 0xC7: return 1;
+        case 0xE3: return 2;  case 0xC3: return 3;
+        case 0xE2: return 4;  case 0xC2: return 5;
+        case 0xE1: return 6;  case 0xC1: return 7;
+        case 0xE0: return 8;  case 0xC0: return 9;
+        case 0xEA: return 10; case 0xCA: return 11;
+        case 0xE9: return 12; case 0xC9: return 13;
+        case 0xE8: return 14; case 0xC8: return 15;
+        case 0xED: return 16; case 0xCD: return 17;
+        case 0xF3: return 18; case 0xD3: return 19;
+        case 0xF4: return 20; case 0xD4: return 21;
+        case 0xF5: return 22; case 0xD5: return 23;
+        case 0xFA: return 24; case 0xDA: return 25;
+        case 0xF1: return 26; case 0xD1: return 27;
+        default: return -1;
+    }
+}
+
 void canvas_draw_char(int x, int y, char c, uint32_t fg, uint32_t bg) {
-    if (c < 32 || c > 126) c = '?';
-    const uint8_t *glyph = font8x16[c - 32];
+    const uint8_t *glyph;
+    unsigned char uc = (unsigned char)c;
+
+    int pi = ptbr_index(uc);
+    if (pi >= 0) {
+        glyph = font_ptbr[pi];
+    } else {
+        if (uc < 32 || uc > 126) uc = '?';
+        glyph = font8x16[uc - 32];
+    }
+
     int row, col;
+    int s = g_font_scale;
     for (row = 0; row < 16; row++) {
         uint8_t bits = glyph[row];
         for (col = 0; col < 8; col++) {
-            if (bits & (0x80 >> col)) {
-                canvas_putpixel(x + col, y + row, fg);
-            } else if (bg != COLOR_TRANSPARENT) {
-                canvas_putpixel(x + col, y + row, bg);
+            uint32_t color = (bits & (0x80 >> col)) ? fg : bg;
+            if (color == COLOR_TRANSPARENT) continue;
+            if (s == 1) {
+                canvas_putpixel(x + col, y + row, color);
+            } else {
+                int pr, pc;
+                for (pr = 0; pr < s; pr++)
+                    for (pc = 0; pc < s; pc++)
+                        canvas_putpixel(x + col*s + pc, y + row*s + pr, color);
             }
         }
     }
 }
 
 void canvas_draw_string(int x, int y, const char *str, uint32_t fg, uint32_t bg) {
+    int s = g_font_scale;
+    int ox = x;
     while (*str) {
-        if (*str == '\n') { y += CHAR_HEIGHT; x = 0; }
-        else { canvas_draw_char(x, y, *str, fg, bg); x += CHAR_WIDTH; }
+        if (*str == '\n') { y += CHAR_HEIGHT * s; x = ox; }
+        else { canvas_draw_char(x, y, *str, fg, bg); x += CHAR_WIDTH * s; }
         str++;
     }
 }
 
 int canvas_string_width(const char *str) {
     int w = 0;
-    while (*str++) w += CHAR_WIDTH;
+    while (*str++) w += CHAR_WIDTH * g_font_scale;
     return w;
 }
 

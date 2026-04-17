@@ -34,6 +34,9 @@ int canvas_string_width(const char *str);
 void canvas_draw_scaled_bitmap(int x, int y, int dw, int dh,
                                const uint32_t *src, int sw, int sh);
 
+/* Font scale: 1=8x16 (terminal), 2=16x32 (UI) */
+void canvas_set_font_scale(int s);
+int  canvas_get_font_scale(void);
 
 #define CHAR_HEIGHT 16
 #define CHAR_WIDTH   8

@@ -92,9 +92,14 @@ C_SOURCES   := compat/detect.c \
                apps/settings.c \
                apps/file_manager.c \
                apps/text_editor.c \
+               apps/image_viewer.c \
                lib/png.c \
                lib/jpeg.c \
-               drivers/ac97.c
+               drivers/ac97.c \
+               drivers/acpi.c \
+               drivers/ahci.c \
+               drivers/usb_hid.c \
+               gui/clipboard.c
 
 # Objetos gerados
 ASM_OBJECTS := $(ASM_SOURCES:.asm=.o)

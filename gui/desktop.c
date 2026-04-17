@@ -16,6 +16,7 @@
 #include <net/netif.h>
 #include <net/net.h>
 #include <net/icmp.h>
+#include <drivers/usb_hid.h>
 #include <compat/detect.h>
 #include <compat/linux_compat.h>
 #include <apps/calculator.h>
@@ -25,7 +26,9 @@
 #include <apps/settings.h>
 #include <apps/file_manager.h>
 #include <apps/text_editor.h>
+#include <apps/image_viewer.h>
 #include <drivers/ac97.h>
+#include <drivers/acpi.h>
 #include <lib/png.h>
 #include <lib/jpeg.h>
 #include <lib/string.h>
@@ -40,11 +43,14 @@ static int       wp_w = 0, wp_h = 0;
 
 /* ── Desktop icons ─────────────────────────────────────────────────────── */
 typedef struct { const char *name; void (*open)(void); int x,y; uint32_t col; } DIcon;
+static void open_image_viewer(void) { image_viewer_open(0); }
+
 static const DIcon ICONS[] = {
     { "Arquivos",  file_manager_open,   20,  20, 0x004A90D9 },
     { "Editor",    text_editor_open,    20,  90, 0x0000B894 },
-    { "Calc",      calculator_open,     20, 160, 0x00E17055 },
-    { "Terminal",  0,                   20, 230, 0x00636E72 },
+    { "Imagens",   open_image_viewer,   20, 160, 0x009B59B6 },
+    { "Calc",      calculator_open,     20, 230, 0x00E17055 },
+    { "Terminal",  0,                   20, 300, 0x00636E72 },
     { 0, 0, 0, 0, 0 }
 };
 #define ICON_W 64
@@ -467,6 +473,7 @@ static void term_handle_command(const char *cmd) {
         term_row=0; term_col=0;
     }
     else if (strcmp(verb, "version") == 0) { term_puts("Krypx v0.1.0 — bare-metal x86\n"); }
+    else if (strcmp(verb, "uname")   == 0) { term_puts("Krypx 0.1.0 x86 32-bit bare-metal\n"); }
     else if (strcmp(verb, "pwd")   == 0) { term_puts(term_cwd); term_puts("\n"); }
     else if (strcmp(verb, "ls")    == 0) { term_cmd_ls(*rest ? rest : 0); }
     else if (strcmp(verb, "cd")    == 0) { term_cmd_cd(*rest ? rest : 0); }
@@ -479,6 +486,31 @@ static void term_handle_command(const char *cmd) {
     else if (strcmp(verb, "ifconfig") == 0) { term_cmd_ifconfig(); }
     else if (strcmp(verb, "ping")  == 0) { term_cmd_ping(*rest ? rest : 0); }
     else if (strcmp(verb, "write") == 0) { term_cmd_write(*rest ? rest : 0); }
+    else if (strcmp(verb, "meminfo") == 0) {
+        extern uint32_t pmm_get_free_pages(void);
+        term_puts("RAM livre: "); term_put_dec(pmm_get_free_pages() * 4); term_puts(" KB\n");
+    }
+    else if (strcmp(verb, "dhcp")   == 0) {
+        extern bool dhcp_request(void);
+        term_puts("Iniciando DHCP...\n");
+        dhcp_request();
+        uint32_t t0 = timer_get_ticks();
+        while (!net_is_configured() && timer_get_ticks()-t0 < 3000) {
+            netif_poll(); __asm__ volatile("hlt");
+        }
+        if (net_is_configured()) term_puts("IP obtido via DHCP\n");
+        else term_puts("DHCP timeout\n");
+    }
+    else if (strcmp(verb, "shutdown") == 0 || strcmp(verb, "poweroff") == 0) {
+        term_puts("Desligando...\n");
+        extern void acpi_shutdown(void);
+        acpi_shutdown();
+    }
+    else if (strcmp(verb, "reboot") == 0) {
+        term_puts("Reiniciando...\n");
+        extern void acpi_reboot(void);
+        acpi_reboot();
+    }
     else if (strcmp(verb, "test_linux") == 0 || verb[0] == '/') {
         const char *p = verb[0]=='/' ? verb : rest;
         term_puts("[COMPAT] Carregando: "); term_puts(p); term_puts("\n");
@@ -491,8 +523,11 @@ static void term_handle_command(const char *cmd) {
 
 static void term_on_paint(window_t *win) {
     canvas_init(fb.backbuf, fb.width, fb.height, fb.pitch);
+    canvas_set_font_scale(1);  /* terminal sempre 1x */
 
     int bx = win->content_x, by = win->content_y;
+    canvas_fill_rect(bx, by, win->content_w, win->content_h, 0x00080808);
+
     int row, col;
     for (row = 0; row < TERM_LINES; row++) {
         for (col = 0; col < TERM_COLS; col++) {
@@ -500,21 +535,30 @@ static void term_on_paint(window_t *win) {
             if (!c) c = ' ';
             canvas_draw_char(bx + col * CHAR_WIDTH,
                              by + row * CHAR_HEIGHT,
-                             c, 0x0000FF00, COLOR_TRANSPARENT);
+                             c, 0x0000FF41, COLOR_TRANSPARENT);
         }
     }
 
-    
     int input_y = by + TERM_LINES * CHAR_HEIGHT + 4;
-    canvas_fill_rect(bx, input_y, win->content_w, CHAR_HEIGHT + 4, 0x00111111);
-    canvas_draw_string(bx, input_y + 2, "> ", 0x0000CEC9, COLOR_TRANSPARENT);
-    canvas_draw_string(bx + 16, input_y + 2, term_input, 0x00FFFFFF, COLOR_TRANSPARENT);
+    canvas_fill_rect(bx, input_y, win->content_w, CHAR_HEIGHT + 6, 0x00111111);
 
-    
+    /* Prompt with current directory */
+    char prompt[64];
+    memcpy(prompt, "root@krypx:", 11);
+    int pl = 11;
+    int cl = (int)strlen(term_cwd);
+    if (cl + pl < 50) { memcpy(prompt + pl, term_cwd, (uint32_t)cl); pl += cl; }
+    prompt[pl++] = '$'; prompt[pl++] = ' '; prompt[pl] = 0;
+    canvas_draw_string(bx + 2, input_y + 3, prompt, 0x0000CEC9, COLOR_TRANSPARENT);
+    int prompt_px = bx + 2 + (int)strlen(prompt) * CHAR_WIDTH;
+    canvas_draw_string(prompt_px, input_y + 3, term_input, 0x00FFFFFF, COLOR_TRANSPARENT);
+
     if ((timer_get_ticks() / 500) % 2 == 0) {
-        int cx = bx + 16 + term_input_len * CHAR_WIDTH;
-        canvas_fill_rect(cx, input_y + 2, 2, CHAR_HEIGHT, 0x00FFFFFF);
+        int cx = prompt_px + term_input_len * CHAR_WIDTH;
+        canvas_fill_rect(cx, input_y + 3, 2, CHAR_HEIGHT, 0x00FFFFFF);
     }
+
+    canvas_set_font_scale(2);  /* restaura para UI */
 }
 
 static void term_on_keydown(window_t *win, char key) {
@@ -803,13 +847,13 @@ static void desktop_icon_click(int mx, int my) {
 }
 
 void desktop_render(void) {
-    
     canvas_init(fb.backbuf, fb.width, fb.height, fb.pitch);
+    canvas_set_font_scale(2);
     draw_wallpaper();
     draw_taskbar();
     if (menu_open) draw_menu();
-    
     wm_render();
+    canvas_set_font_scale(2);
 }
 
 void desktop_init(void) {
@@ -820,9 +864,9 @@ void desktop_init(void) {
     
     terminal_win = wm_create("Krypx Terminal",
                              50, 50,
-                             TERM_COLS * CHAR_WIDTH + 20,
-                             TERM_LINES * CHAR_HEIGHT + 80,
-                             0);
+                             TERM_COLS * CHAR_WIDTH + 24,
+                             TERM_LINES * CHAR_HEIGHT + CHAR_HEIGHT + 52,
+                             WIN_RESIZABLE);
     if (terminal_win) {
         terminal_win->bg_color    = 0x00111111;
         terminal_win->on_paint    = term_on_paint;
@@ -1025,6 +1069,7 @@ void desktop_run(void) {
         }
 
         netif_poll();
+        usb_hid_poll();
         __asm__ volatile ("hlt");
     }
 }

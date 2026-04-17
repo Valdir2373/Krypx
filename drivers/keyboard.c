@@ -1,45 +1,43 @@
-/*
- * drivers/keyboard.c — Driver teclado PS/2 com scancode Set 1
- * Converte scancodes para ASCII. Suporta Shift e Caps Lock.
- * Usa um ring buffer de 256 bytes para não perder teclas.
- */
+
 
 #include <drivers/keyboard.h>
 #include <kernel/idt.h>
 #include <types.h>
 #include <io.h>
 
-/* Tamanho do buffer circular */
+
 #define KB_BUFFER_SIZE 256
 
-/* Buffer circular */
+
 static char     kb_buf[KB_BUFFER_SIZE];
 static uint8_t  kb_read_pos  = 0;
 static uint8_t  kb_write_pos = 0;
 
-/* Estado das teclas modificadoras */
+
 static bool shift_pressed  = false;
 static bool caps_lock      = false;
 static bool ctrl_pressed   = false;
 static bool alt_pressed    = false;
+static bool abnt2_mode     = true;   /* layout ABNT2 brasileiro */
+static uint8_t dead_key    = 0;      /* acento pendente: 1=agudo 2=til 3=circunflexo */
 
-/* Tabela de scancodes Set 1 → ASCII (sem shift) */
+
 static const char sc_to_ascii[128] = {
     0,    27,  '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
     '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
     0,    'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
     0,    '\\','z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
     '*',  0,   ' ', 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  /* F1-F10 */
-    0, 0,                            /* Num Lock, Scroll Lock */
-    0, 0, 0, '-',                    /* Home, Up, PgUp, - */
-    0, 0, 0, '+',                    /* Left, 5, Right, + */
-    0, 0, 0, 0, 0,                   /* End, Down, PgDn, Ins, Del */
-    0, 0, 0,                         /* ? */
-    0, 0,                            /* F11, F12 */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  
+    0, 0,                            
+    0, 0, 0, '-',                    
+    0, 0, 0, '+',                    
+    0, 0, 0, 0, 0,                   
+    0, 0, 0,                         
+    0, 0,                            
 };
 
-/* Tabela de scancodes Set 1 → ASCII (com shift) */
+
 static const char sc_to_ascii_shift[128] = {
     0,    27,  '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
     '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
@@ -55,60 +53,92 @@ static const char sc_to_ascii_shift[128] = {
     0, 0,
 };
 
-/* Scancodes especiais */
+
 #define SC_LSHIFT      0x2A
 #define SC_RSHIFT      0x36
 #define SC_LCTRL       0x1D
 #define SC_LALT        0x38
 #define SC_CAPS_LOCK   0x3A
-#define SC_RELEASE     0x80  /* Bit 7 = tecla solta */
+#define SC_RELEASE     0x80  
 
 static void kb_buf_push(char c) {
     uint8_t next = (kb_write_pos + 1) % KB_BUFFER_SIZE;
-    if (next != kb_read_pos) {  /* Não sobrescreve se cheio */
+    if (next != kb_read_pos) {  
         kb_buf[kb_write_pos] = c;
         kb_write_pos = next;
     }
+}
+
+/* Mapeamento de scancodes extras para ABNT2 (ç, ~, ^, acentos) */
+static char abnt2_apply_dead(uint8_t dk, char base) {
+    /* dk: 1=agudo 2=til 3=circunflexo 4=grave 5=trema */
+    static const char agudo[]  = "aeiouAEIOU";
+    static const char agudo_r[]= "\xe1\xe9\xed\xf3\xfa\xc1\xc9\xcd\xd3\xda";
+    static const char til[]    = "aoAO";
+    static const char til_r[]  = "\xe3\xf5\xc3\xd5";
+    static const char circ[]   = "aeiouAEIOU";
+    static const char circ_r[] = "\xe2\xea\xee\xf4\xfb\xc2\xca\xce\xd4\xdb";
+    int i;
+    if (dk == 1) { for (i=0;agudo[i];i++) if (base==agudo[i]) return agudo_r[i]; }
+    if (dk == 2) { for (i=0;til[i];i++)   if (base==til[i])   return til_r[i]; }
+    if (dk == 3) { for (i=0;circ[i];i++)  if (base==circ[i])  return circ_r[i]; }
+    return base;
 }
 
 static void keyboard_handler(registers_t *regs) {
     (void)regs;
     uint8_t sc = inb(KB_DATA_PORT);
 
-    /* Tecla solta (bit 7 = 1) */
     if (sc & SC_RELEASE) {
-        uint8_t released = sc & ~SC_RELEASE;
-        if (released == SC_LSHIFT || released == SC_RSHIFT) shift_pressed = false;
-        if (released == SC_LCTRL)  ctrl_pressed = false;
-        if (released == SC_LALT)   alt_pressed  = false;
+        uint8_t r = sc & ~SC_RELEASE;
+        if (r == SC_LSHIFT || r == SC_RSHIFT) shift_pressed = false;
+        if (r == SC_LCTRL)  ctrl_pressed = false;
+        if (r == SC_LALT)   alt_pressed  = false;
         pic_send_eoi(33);
         return;
     }
 
-    /* Teclas modificadoras */
     if (sc == SC_LSHIFT || sc == SC_RSHIFT) { shift_pressed = true;  goto eoi; }
     if (sc == SC_LCTRL)                     { ctrl_pressed  = true;  goto eoi; }
     if (sc == SC_LALT)                      { alt_pressed   = true;  goto eoi; }
     if (sc == SC_CAPS_LOCK)                 { caps_lock = !caps_lock; goto eoi; }
 
-    /* Converte scancode para ASCII */
     if (sc < 128) {
         char c;
         bool use_shift = shift_pressed;
 
-        /* Caps lock afeta só letras */
-        if (caps_lock && sc >= 0x10 && sc <= 0x32) {
-            use_shift = !use_shift;
-        }
+        if (caps_lock && sc >= 0x10 && sc <= 0x32) use_shift = !use_shift;
 
         c = use_shift ? sc_to_ascii_shift[sc] : sc_to_ascii[sc];
 
-        if (c) {
-            /* Ctrl+C, Ctrl+D, etc. */
-            if (ctrl_pressed && c >= 'a' && c <= 'z') {
-                c = c - 'a' + 1;  /* Ctrl+A = 1, Ctrl+C = 3, etc. */
+        /* ABNT2: teclado brasileiro */
+        if (abnt2_mode) {
+            /* scancode 0x27 = ';' no US → 'ç' no ABNT2 */
+            if (sc == 0x27) c = use_shift ? 'C' : '\xe7';  /* ç / Ç */
+            /* scancode 0x29 = '`' no US → aspas no ABNT2 */
+            if (sc == 0x29) c = use_shift ? '"' : '\'';
+            /* scancodes de acento agudo (') e til (~) */
+            if (sc == 0x28) { /* acento agudo / til */
+                dead_key = use_shift ? 2 : 1;
+                goto eoi;
             }
+            if (sc == 0x1A) { /* ^ / ` */
+                dead_key = 3;
+                goto eoi;
+            }
+        }
+
+        if (c) {
+            if (dead_key) {
+                char acc = abnt2_apply_dead(dead_key, c);
+                dead_key = 0;
+                kb_buf_push(acc != c ? acc : c);
+                goto eoi;
+            }
+            if (ctrl_pressed && c >= 'a' && c <= 'z') c = c - 'a' + 1;
             kb_buf_push(c);
+        } else if (dead_key) {
+            dead_key = 0;
         }
     }
 
@@ -140,4 +170,8 @@ char keyboard_read(void) {
 
 bool keyboard_available(void) {
     return kb_read_pos != kb_write_pos;
+}
+
+void keyboard_inject(char c) {
+    if (c) kb_buf_push(c);
 }

@@ -1,7 +1,4 @@
-/*
- * kernel/kernel.c — Entry point C do Krypx
- * Inicializa todos os subsistemas da Fase 1: VGA, GDT, IDT, PIT, Teclado.
- */
+
 
 #include <types.h>
 #include <multiboot.h>
@@ -24,6 +21,9 @@
 #include <kernel/syscall.h>
 #include <drivers/framebuffer.h>
 #include <drivers/pci.h>
+#include <drivers/ahci.h>
+#include <drivers/usb_hid.h>
+#include <drivers/acpi.h>
 #include <gui/desktop.h>
 #include <net/netif.h>
 #include <security/users.h>
@@ -33,24 +33,20 @@
 #include <compat/win_compat.h>
 #include <proc/elf.h>
 
-/* ============================================================
- * Debug via porta serial COM1 (115200 baud)
- * ============================================================ */
+
 static void ser_init(void) {
     outb(0x3F9, 0x00);
     outb(0x3FB, 0x80);
-    outb(0x3F8, 0x01);  /* 115200 baud */
+    outb(0x3F8, 0x01);  
     outb(0x3F9, 0x00);
-    outb(0x3FB, 0x03);  /* 8N1 */
+    outb(0x3FB, 0x03);  
     outb(0x3FA, 0xC7);
     outb(0x3FC, 0x0B);
 }
 static void ser_putc(char c) { while (!(inb(0x3FD)&0x20)); outb(0x3F8,c); }
 static void ser_puts(const char *s) { while (*s) ser_putc(*s++); }
 
-/* ============================================================
- * kernel_panic — Para tudo e exibe mensagem de erro fatal
- * ============================================================ */
+
 void kernel_panic(const char *msg) {
     cli();
     ser_puts("\r\n*** KERNEL PANIC *** ");
@@ -63,9 +59,7 @@ void kernel_panic(const char *msg) {
     for (;;) __asm__ volatile ("hlt");
 }
 
-/* ============================================================
- * Helpers de log
- * ============================================================ */
+
 static void log_ok(const char *msg) {
     vga_set_color(VGA_COLOR_GREEN, VGA_COLOR_BLACK);
     vga_puts("[OK] ");
@@ -82,9 +76,7 @@ static void log_info(const char *msg) {
     vga_puts("\n");
 }
 
-/* ============================================================
- * Banner de boot
- * ============================================================ */
+
 static void print_banner(void) {
     vga_set_color(VGA_COLOR_CYAN, VGA_COLOR_BLACK);
     vga_puts("================================================================================\n");
@@ -112,9 +104,7 @@ static void print_meminfo(multiboot_info_t *mbi) {
     }
 }
 
-/* ============================================================
- * Loop interativo simples (eco de teclado)
- * ============================================================ */
+
 static void keyboard_echo_loop(void) {
     vga_set_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
     vga_puts("\nDigite algo (teclado PS/2 ativo):\n");
@@ -138,11 +128,7 @@ static void keyboard_echo_loop(void) {
     }
 }
 
-/* ============================================================
- * compat_try_run — Carrega e executa binário do disco via compat layer
- * Detecta o tipo (ELF Linux / PE Windows), carrega no processo e
- * adiciona ao scheduler. O processo receberá fatias de CPU pelo timer.
- * ============================================================ */
+
 static void compat_try_run(const char *path) {
     vfs_node_t *node = vfs_resolve(path);
     if (!node) return;
@@ -155,7 +141,7 @@ static void compat_try_run(const char *path) {
     vga_puts(" bytes)\n");
     vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
 
-    /* Lê o arquivo inteiro para o heap do kernel */
+    
     uint8_t *buf = (uint8_t *)kmalloc(node->size);
     if (!buf) {
         vga_puts("[COMPAT] ERRO: kmalloc falhou\n");
@@ -163,7 +149,7 @@ static void compat_try_run(const char *path) {
     }
     vfs_read(node, 0, node->size, buf);
 
-    /* Detecta o tipo de executável */
+    
     binary_type_t btype = detect_binary_type(buf, node->size);
     vga_set_color(VGA_COLOR_CYAN, VGA_COLOR_BLACK);
     vga_puts("[COMPAT] Tipo detectado: ");
@@ -183,14 +169,14 @@ static void compat_try_run(const char *path) {
         return;
     }
 
-    /* Extrai nome do arquivo (remove o prefixo "/") */
+    
     const char *pname = path;
     {
         const char *tmp = path;
         while (*tmp) { if (*tmp == '/') pname = tmp + 1; tmp++; }
     }
 
-    /* Cria processo e carrega o ELF */
+    
     process_t *proc = process_create(pname, 0, 2);
     if (!proc) {
         vga_puts("[COMPAT] ERRO: nao foi possivel criar processo\n");
@@ -204,19 +190,19 @@ static void compat_try_run(const char *path) {
         kfree(buf);
         return;
     }
-    kfree(buf);  /* ELF já foi copiado para o espaço do processo */
+    kfree(buf);  
 
-    /* Configura contexto de execução */
+    
     proc->ctx.eip    = res.entry_point;
     proc->ctx.esp    = res.user_stack_top;
-    proc->ctx.eflags = 0x202;  /* IF=1 */
+    proc->ctx.eflags = 0x202;  
     proc->heap_start = res.heap_base;
     proc->heap_end   = res.heap_base;
 
     if (btype == BINARY_LINUX_ELF)
         proc->compat_mode = COMPAT_LINUX;
 
-    /* Adiciona ao scheduler */
+    
     scheduler_add(proc);
 
     vga_set_color(VGA_COLOR_GREEN, VGA_COLOR_BLACK);
@@ -226,7 +212,7 @@ static void compat_try_run(const char *path) {
     vga_put_dec(proc->pid);
     vga_puts(", entry=0x");
     {
-        /* Exibe entry point em hex */
+        
         uint32_t v = res.entry_point;
         char hex[9]; int hi;
         hex[8] = '\0';
@@ -241,119 +227,142 @@ static void compat_try_run(const char *path) {
     vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
 }
 
-/* ============================================================
- * kernel_main — Entry point C
- * ============================================================ */
+
 void kernel_main(uint32_t magic, uint32_t mbi_addr) {
     multiboot_info_t *mbi = (multiboot_info_t *)mbi_addr;
 
-    ser_init();  /* COM1 115200 baud — debug via serial */
+    ser_init();  
+    ser_puts("[BOOT] kernel_main iniciado\r\n");
 
-    /* === 1. VGA (primeiro — precisamos ver o que acontece) === */
+    
+    ser_puts("[DBG] step1: vga_init\r\n");
     vga_init();
+    ser_puts("[DBG] step1: ok\r\n");
 
-    /* === 2. Valida magic Multiboot === */
+    
     if (magic != MULTIBOOT_BOOTLOADER_MAGIC) {
         kernel_panic("Bootloader invalido! Magic number incorreto.");
     }
 
     print_banner();
 
-    /* === 3. GDT === */
+    
+    ser_puts("[DBG] step3: gdt_init\r\n");
     log_info("Inicializando GDT...");
     gdt_init();
     log_ok("GDT carregada (null, kernel code/data, user code/data, TSS)");
+    ser_puts("[DBG] step3: ok\r\n");
 
-    /* === 4. IDT + PIC remapping === */
+    
+    ser_puts("[DBG] step4: idt_init\r\n");
     log_info("Inicializando IDT e remapeando PIC 8259...");
     idt_init();
     log_ok("IDT carregada (256 entradas). PIC remapeado (IRQs 32-47)");
+    ser_puts("[DBG] step4: ok\r\n");
 
-    /* === 5. PIT Timer === */
+    
+    ser_puts("[DBG] step5: timer_init\r\n");
     log_info("Inicializando PIT timer (1000 Hz)...");
     timer_init();
     log_ok("PIT configurado. IRQ0 ativo");
+    ser_puts("[DBG] step5: ok\r\n");
 
-    /* === 6. Teclado PS/2 === */
+    
+    ser_puts("[DBG] step6: keyboard_init\r\n");
     log_info("Inicializando teclado PS/2...");
     keyboard_init();
     log_ok("Teclado PS/2 ativo. IRQ1 habilitado");
+    ser_puts("[DBG] step6: ok\r\n");
 
-    /* === 6b. Mouse PS/2 === */
+    
+    ser_puts("[DBG] step6b: mouse_init\r\n");
     log_info("Inicializando mouse PS/2...");
     mouse_init();
     log_ok("Mouse PS/2 ativo. IRQ12 habilitado");
+    ser_puts("[DBG] step6b: ok\r\n");
 
-    /* === 7. PMM === */
+    
+    ser_puts("[DBG] step7: pmm_init\r\n");
     log_info("Inicializando PMM (Physical Memory Manager)...");
     pmm_init(mbi);
     log_ok("PMM pronto (bitmap de paginas fisicas)");
     pmm_print_info();
+    ser_puts("[DBG] step7: ok\r\n");
 
-    /* === 8. VMM (paginacao) === */
+    
+    ser_puts("[DBG] step8: vmm_init\r\n");
     log_info("Inicializando VMM e ativando paginacao x86...");
     vmm_init();
     log_ok("VMM pronto. Paginacao ativa (CR0.PG=1, PSE=4MB pages)");
+    ser_puts("[DBG] step8: ok\r\n");
 
-    /* === 9. Heap do kernel === */
+    
+    ser_puts("[DBG] step9: heap_init\r\n");
     log_info("Inicializando heap do kernel...");
-    /*
-     * O heap começa logo após o fim do kernel (alinhado a 4 MB)
-     * e tem 4 MB de tamanho inicial. O PMM já reservou o kernel.
-     */
-    uint32_t heap_start_addr = 0x800000;   /* 8 MB — acima do kernel+bitmap */
-    heap_init(heap_start_addr, 4 * 1024 * 1024);
-    log_ok("Heap do kernel pronto (4 MB iniciais, kmalloc/kfree disponiveis)");
+    uint32_t heap_start_addr = 0x800000;
+    heap_init(heap_start_addr, 16 * 1024 * 1024);  /* 16 MB iniciais */
+    log_ok("Heap do kernel pronto (16 MB, kmalloc/kfree disponiveis)");
+    ser_puts("[DBG] step9: ok\r\n");
 
-    /* === 10. Habilita interrupções === */
+    
+    ser_puts("[DBG] step10: sti\r\n");
     sti();
     log_ok("Interrupcoes habilitadas (STI)");
+    ser_puts("[DBG] step10: ok\r\n");
 
-    /* === Teste do heap === */
+    
     {
         void *a = kmalloc(64);
         void *b = kmalloc(128);
         void *c = kmalloc(256);
         kfree(b);
-        void *d = kmalloc(100);  /* Deve reusar o slot de b */
+        void *d = kmalloc(100);  
         (void)a; (void)c; (void)d;
         vga_set_color(VGA_COLOR_GREEN, VGA_COLOR_BLACK);
         vga_puts("[OK] Teste kmalloc/kfree passou\n");
         heap_print_info();
     }
 
-    /* === Informações === */
+    
     print_meminfo(mbi);
 
-    /* === 11. IDE + VFS + FAT32 === */
+    
+    ser_puts("[DBG] step11: ide_init\r\n");
     log_info("Inicializando driver IDE/ATA...");
     ide_init();
+    ser_puts("[DBG] step11: ide_init ok\r\n");
     if (ide_disk_present()) {
+        ser_puts("[DBG] step11: disco presente\r\n");
         vga_set_color(VGA_COLOR_GREEN, VGA_COLOR_BLACK);
         vga_puts("[OK] Disco IDE detectado: ");
         vga_put_dec(ide_get_sector_count() / 2048);
         vga_puts(" MB\n");
         vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
 
+        ser_puts("[DBG] step11: fat32_init\r\n");
         log_info("Montando FAT32...");
         vfs_init();
         if (fat32_init(0)) {
             vfs_mount_root(fat32_get_root());
             log_ok("FAT32 montado em /");
+            ser_puts("[DBG] step11: fat32 ok\r\n");
         } else {
             vga_set_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
             vga_puts("[WARN] FAT32 nao encontrado (disco sem particao FAT32)\n");
             vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+            ser_puts("[DBG] step11: fat32 nao encontrado\r\n");
             vfs_init();
         }
     } else {
+        ser_puts("[DBG] step11: sem disco IDE\r\n");
         vga_set_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
         vga_puts("[WARN] Sem disco IDE (rodando em QEMU sem -drive)\n");
         vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
         vfs_init();
     }
 
-    /* === 12. Processos + Scheduler + Syscalls === */
+    
+    ser_puts("[DBG] step12: process_init\r\n");
     log_info("Inicializando processos e scheduler...");
     process_init();
     scheduler_init();
@@ -362,40 +371,55 @@ void kernel_main(uint32_t magic, uint32_t mbi_addr) {
     (void)kproc;
     log_ok("Processos inicializados. Scheduler Round-Robin pronto");
 
-    /* Adiciona o processo kernel à fila */
+    
     scheduler_add(process_current());
     scheduler_enable();
     log_ok("Syscalls via int 0x80 registradas");
+    ser_puts("[DBG] step12: ok\r\n");
 
-    /* === 12b. Camada de compatibilidade binária === */
+    
     linux_compat_init();
     win_compat_init();
     vga_set_color(VGA_COLOR_GREEN, VGA_COLOR_BLACK);
     vga_puts("[OK] Compat: Linux ELF i386 ativo | Windows PE (em breve)\n");
     vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
 
-    /*
-     * Tenta carregar e executar binários do disco (FAT32 já montado no passo 11).
-     * O processo entra no scheduler e recebe fatias de CPU a cada tick do timer.
-     * O delay de 300 ms garante que ele execute e produza saída no VGA texto
-     * ANTES de a GUI iniciar e sobrescrever a tela.
-     */
+    
+    ser_puts("[DBG] step12b: compat_try_run\r\n");
     compat_try_run("/test_linux");
+    ser_puts("[DBG] step12b: compat_try_run ok\r\n");
     if (process_get(1) || process_get(2)) {
-        /* Há processo compat no scheduler — dá tempo para rodar */
+        
         vga_set_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
         vga_puts("[COMPAT] Aguardando saida do processo Linux...\n");
         vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
         uint32_t t0 = timer_get_ticks();
         while (timer_get_ticks() - t0 < 400) {
-            __asm__ volatile ("hlt");   /* Cede CPU; timer IRQ → schedule() */
+            __asm__ volatile ("hlt");   
         }
         vga_set_color(VGA_COLOR_GREEN, VGA_COLOR_BLACK);
         vga_puts("[COMPAT] Processo Linux concluido.\n");
         vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
     }
 
-    /* === 13. Rede (PCI + e1000 + TCP/IP + DHCP) === */
+    
+    /* ACPI */
+    ser_puts("[DBG] acpi_init\r\n");
+    acpi_init();
+    if (acpi_available()) log_ok("ACPI: shutdown/reboot disponiveis");
+
+    /* AHCI/SATA */
+    ser_puts("[DBG] ahci_init\r\n");
+    if (ahci_init()) {
+        log_ok("AHCI: disco SATA detectado");
+    }
+
+    /* USB HID */
+    ser_puts("[DBG] usb_hid_init\r\n");
+    usb_hid_init();
+    if (usb_kbd_available()) log_ok("USB: teclado HID detectado");
+
+    ser_puts("[DBG] step13: netif_init\r\n");
     log_info("Inicializando pilha de rede...");
     pci_init();
     netif_init();
@@ -411,24 +435,67 @@ void kernel_main(uint32_t magic, uint32_t mbi_addr) {
         ser_puts("[NET] Sem rede\r\n");
     }
 
-    /* === 14. Segurança: usuários + ASLR === */
+    
+    /* Ler hora real do RTC do BIOS */
+    ser_puts("[DBG] rtc\r\n");
+    {
+        extern void timer_set_rtc_base(uint32_t h, uint32_t m, uint32_t s);
+        /* RTC via portas 0x70/0x71: registradores 0x00=seg, 0x02=min, 0x04=hora */
+        outb(0x70, 0x00); uint8_t sec_bcd = inb(0x71);
+        outb(0x70, 0x02); uint8_t min_bcd = inb(0x71);
+        outb(0x70, 0x04); uint8_t hr_bcd  = inb(0x71);
+        /* BCD → binário */
+        uint32_t ss = (sec_bcd >> 4)*10 + (sec_bcd & 0xF);
+        uint32_t mm = (min_bcd >> 4)*10 + (min_bcd & 0xF);
+        uint32_t hh = (hr_bcd  >> 4)*10 + (hr_bcd  & 0xF);
+        timer_set_rtc_base(hh, mm, ss);
+        vga_set_color(VGA_COLOR_GREEN, VGA_COLOR_BLACK);
+        vga_puts("[OK] RTC: ");
+        vga_put_dec(hh); vga_puts(":"); vga_put_dec(mm); vga_puts(":"); vga_put_dec(ss); vga_puts("\n");
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+    }
+
+    ser_puts("[DBG] step14: security_init\r\n");
     log_info("Inicializando subsistema de segurança...");
     aslr_init(timer_get_ticks());
     users_init();
     log_ok("Segurança: ASLR ativo, usuario root criado (senha: krypx)");
     ser_puts("[SEC] Seguranca inicializada\r\n");
 
-    /* === 15. Framebuffer + GUI === */
+    
+    /* Primeiro boot: criar estrutura de diretórios no disco */
+    if (ide_disk_present() && vfs_root) {
+        ser_puts("[DBG] first_boot\r\n");
+        vfs_node_t *home = vfs_resolve("/home");
+        if (!home) { vfs_mkdir(vfs_root, "home",  0755); }
+        vfs_node_t *bin  = vfs_resolve("/bin");
+        if (!bin)  { vfs_mkdir(vfs_root, "bin",   0755); }
+        vfs_node_t *etc  = vfs_resolve("/etc");
+        if (!etc)  { vfs_mkdir(vfs_root, "etc",   0755); }
+        /* /home/root */
+        vfs_node_t *hroot_par = vfs_resolve("/home");
+        if (hroot_par) {
+            vfs_node_t *hroot = vfs_resolve("/home/root");
+            if (!hroot) vfs_mkdir(hroot_par, "root", 0700);
+        }
+        vga_set_color(VGA_COLOR_GREEN, VGA_COLOR_BLACK);
+        vga_puts("[OK] Estrutura de diretorios verificada (/home /bin /etc)\n");
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+    }
+
+    ser_puts("[DBG] step15: fb_init\r\n");
     log_info("Inicializando framebuffer VBE...");
     if (fb_init(mbi)) {
         log_ok("Framebuffer VBE pronto — iniciando GUI");
+        ser_puts("[DBG] step15: GUI start\r\n");
         desktop_init();
-        desktop_run();   /* Loop infinito */
+        desktop_run();   
     } else {
         vga_set_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
         vga_puts("[WARN] Sem framebuffer VBE — modo texto\n");
         vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
         vga_puts("(Rode com ISO via GRUB para ativar o modo grafico)\n");
+        ser_puts("[DBG] step15: sem framebuffer\r\n");
     }
 
     vga_set_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);

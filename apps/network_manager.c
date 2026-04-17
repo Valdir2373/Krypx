@@ -46,16 +46,13 @@ static void mac_to_str(const uint8_t *mac, char *out) {
 /* Draw a labeled value row */
 static void draw_row(int lx, int *cy, const char *label, const char *value,
                      uint32_t lbl_col, uint32_t val_col, int vx) {
-    canvas_set_font_scale(2);
     canvas_draw_string(lx, *cy, label, lbl_col, COLOR_TRANSPARENT);
     canvas_draw_string(vx, *cy, value, val_col, COLOR_TRANSPARENT);
-    canvas_set_font_scale(2);
-    *cy += 36;
+    *cy += 22;
 }
 
 static void nm_on_paint(window_t *win) {
     canvas_init(fb.backbuf, fb.width, fb.height, fb.pitch);
-    canvas_set_font_scale(2);
 
     int bx = win->content_x, by = win->content_y;
     int w  = win->content_w,  h  = win->content_h;
@@ -141,8 +138,8 @@ static void nm_on_click(window_t *win, int mx, int my) {
     int bx = win->content_x, by = win->content_y;
     int w  = win->content_w;
 
-    /* Estimate button Y: header(48) + 6 rows(36each=216) + sep(18) = 282 */
-    int btn_y = by + 282;
+    /* Estimate button Y: header(48) + 6 rows(22each=132) + sep(18) = 198 */
+    int btn_y = by + 198;
     int btn_w = 240, btn_h = 36;
     int btn_x = bx + (w - btn_w) / 2;
 
@@ -165,8 +162,8 @@ void network_manager_open(void) {
 
     nm_win = wm_create("Gerenciador de Rede",
                         (int)fb.width/2  - 230,
-                        (int)fb.height/2 - 240,
-                        460, 480, WIN_RESIZABLE);
+                        (int)fb.height/2 - 180,
+                        460, 360, WIN_RESIZABLE);
     if (!nm_win) return;
     nm_win->bg_color  = 0x001A2332;
     nm_win->on_paint  = nm_on_paint;

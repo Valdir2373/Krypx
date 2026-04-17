@@ -523,7 +523,6 @@ static void term_handle_command(const char *cmd) {
 
 static void term_on_paint(window_t *win) {
     canvas_init(fb.backbuf, fb.width, fb.height, fb.pitch);
-    canvas_set_font_scale(1);  /* terminal sempre 1x */
 
     int bx = win->content_x, by = win->content_y;
     canvas_fill_rect(bx, by, win->content_w, win->content_h, 0x00080808);
@@ -558,7 +557,6 @@ static void term_on_paint(window_t *win) {
         canvas_fill_rect(cx, input_y + 3, 2, CHAR_HEIGHT, 0x00FFFFFF);
     }
 
-    canvas_set_font_scale(2);  /* restaura para UI */
 }
 
 static void term_on_keydown(window_t *win, char key) {
@@ -848,12 +846,10 @@ static void desktop_icon_click(int mx, int my) {
 
 void desktop_render(void) {
     canvas_init(fb.backbuf, fb.width, fb.height, fb.pitch);
-    canvas_set_font_scale(2);
     draw_wallpaper();
     draw_taskbar();
     if (menu_open) draw_menu();
     wm_render();
-    canvas_set_font_scale(2);
 }
 
 void desktop_init(void) {

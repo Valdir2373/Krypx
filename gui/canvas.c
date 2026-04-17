@@ -231,7 +231,7 @@ static const uint8_t font8x16[95][16] = {
      {0,0x76,0xDC,0,0,0,0,0,0,0,0,0,0,0,0,0},
 };
 
-/* Global font scale — 1 = 8x16 (terminal), 2 = 16x32 (UI default) */
+/* Global font scale — 1 = 8x16 (default) */
 static int g_font_scale = 1;
 
 void canvas_set_font_scale(int s) { if (s >= 1 && s <= 4) g_font_scale = s; }

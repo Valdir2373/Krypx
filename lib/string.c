@@ -1,7 +1,4 @@
-/*
- * lib/string.c — Implementação de string.h para o kernel Krypx
- * Zero dependências externas.
- */
+
 
 #include <lib/string.h>
 
@@ -38,6 +35,13 @@ char *strncpy(char *dst, const char *src, size_t n) {
 char *strcat(char *dst, const char *src) {
     char *d = dst + strlen(dst);
     while ((*d++ = *src++));
+    return dst;
+}
+
+char *strncat(char *dst, const char *src, size_t n) {
+    char *d = dst + strlen(dst);
+    while (n-- && (*d = *src++)) d++;
+    *d = 0;
     return dst;
 }
 

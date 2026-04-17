@@ -1,6 +1,4 @@
-/*
- * net/icmp.h — Internet Control Message Protocol (ping)
- */
+
 #ifndef _ICMP_H
 #define _ICMP_H
 
@@ -17,12 +15,15 @@ typedef struct {
     uint16_t seq;
 } __attribute__((packed)) icmp_hdr_t;
 
-/* Envia um ICMP echo request (ping) */
+
 void icmp_send_echo(uint32_t dst_ip, uint16_t id, uint16_t seq);
 
-/* Handler chamado por ip_recv */
+
 void icmp_recv(const void *pkt, uint16_t len, uint32_t src_ip);
 
 void icmp_init(void);
 
-#endif /* _ICMP_H */
+bool icmp_get_ping_reply(void);
+void icmp_clear_ping_reply(void);
+
+#endif

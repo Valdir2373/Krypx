@@ -1,11 +1,9 @@
-/*
- * apps/settings.c — Painel de configuracoes do Krypx
- * Mostra e permite modificar configuracoes basicas do sistema.
- */
+
 
 #include <apps/settings.h>
 #include <gui/window.h>
 #include <gui/canvas.h>
+#include <gui/desktop.h>
 #include <proc/process.h>
 #include <drivers/framebuffer.h>
 #include <security/users.h>
@@ -20,7 +18,7 @@
 
 static window_t *set_win = NULL;
 
-/* Seções de configurações */
+
 static const char *sections[] = {
     "Sistema",
     "Exibicao",
@@ -30,6 +28,11 @@ static const char *sections[] = {
 };
 
 static int sel_section = 0;
+
+/* Wallpaper picker state */
+static char wp_path[128] = "";
+static bool wp_input_active = false;
+static char wp_status[64]   = "";
 
 static void uint_to_str2(uint32_t v, char *out) {
     if (v == 0) { out[0]='0'; out[1]='\0'; return; }
@@ -47,7 +50,7 @@ static void set_on_paint(window_t *win) {
 
     canvas_fill_rect(bx, by, w, win->content_h, 0x001E272E);
 
-    /* Painel lateral de seções */
+    
     int sidebar_w = 100;
     canvas_fill_rect(bx, by, sidebar_w, win->content_h, 0x00151E27);
 
@@ -60,17 +63,17 @@ static void set_on_paint(window_t *win) {
                            0x00DFE6E9, COLOR_TRANSPARENT);
     }
 
-    /* Separador vertical */
+    
     canvas_draw_line(bx + sidebar_w, by, bx + sidebar_w, by + win->content_h, 0x00636E72);
 
-    /* Conteúdo da seção selecionada */
+    
     int cx = bx + sidebar_w + 12;
     int cy = by + 12;
     uint32_t lbl = 0x0074B9FF;
     uint32_t val = 0x00DFE6E9;
 
     switch (sel_section) {
-        case 0: { /* Sistema */
+        case 0: { 
             canvas_draw_string(cx, cy, "Sistema", lbl, COLOR_TRANSPARENT); cy += 24;
             canvas_draw_string(cx, cy, "Versao:", lbl, COLOR_TRANSPARENT);
             canvas_draw_string(cx+80, cy, KRYPX_VERSION_STR, val, COLOR_TRANSPARENT); cy += 20;
@@ -94,6 +97,7 @@ static void set_on_paint(window_t *win) {
         }
         case 1: { /* Exibicao */
             canvas_draw_string(cx, cy, "Exibicao", lbl, COLOR_TRANSPARENT); cy += 24;
+            /* Resolution info */
             char rstr[32];
             char tmp1[8], tmp2[8];
             uint_to_str2(fb.width,  tmp1);
@@ -103,14 +107,44 @@ static void set_on_paint(window_t *win) {
             rstr[strlen(rstr)+1] = '\0';
             memcpy(rstr+strlen(rstr), tmp2, strlen(tmp2)+1);
             canvas_draw_string(cx, cy, "Resolucao:", lbl, COLOR_TRANSPARENT);
-            canvas_draw_string(cx+80, cy, rstr, val, COLOR_TRANSPARENT); cy += 20;
+            canvas_draw_string(cx+96, cy, rstr, val, COLOR_TRANSPARENT); cy += 20;
             canvas_draw_string(cx, cy, "Profundidade:", lbl, COLOR_TRANSPARENT);
-            canvas_draw_string(cx+104, cy, "32bpp", val, COLOR_TRANSPARENT); cy += 20;
+            canvas_draw_string(cx+112, cy, "32bpp", val, COLOR_TRANSPARENT); cy += 20;
             canvas_draw_string(cx, cy, "Driver:", lbl, COLOR_TRANSPARENT);
-            canvas_draw_string(cx+80, cy, "VBE/VESA", val, COLOR_TRANSPARENT); cy += 20;
+            canvas_draw_string(cx+96, cy, "VBE/VESA", val, COLOR_TRANSPARENT); cy += 28;
+
+            /* Wallpaper section */
+            canvas_draw_string(cx, cy, "Papel de Parede", lbl, COLOR_TRANSPARENT); cy += 20;
+            canvas_draw_string(cx, cy, "Formatos: PNG, JPG, JPEG", 0x00636E72, COLOR_TRANSPARENT); cy += 18;
+
+            /* Path input box */
+            int box_x = cx, box_y = cy, box_w = 210, box_h = 20;
+            uint32_t box_border = wp_input_active ? 0x000984E3 : 0x00636E72;
+            canvas_fill_rect(box_x, box_y, box_w, box_h, 0x00151E27);
+            canvas_draw_rect(box_x, box_y, box_w, box_h, box_border);
+            /* Show path or placeholder */
+            const char *disp = (wp_path[0] != '\0') ? wp_path : "/wallpaper.png";
+            uint32_t disp_col = (wp_path[0] != '\0') ? val : 0x00636E72;
+            canvas_draw_string(box_x+4, box_y+3, disp, disp_col, COLOR_TRANSPARENT);
+            if (wp_input_active) {
+                /* blinking cursor */
+                int cpos = box_x + 4 + (int)strlen(wp_path)*8;
+                canvas_fill_rect(cpos, box_y+3, 2, 13, 0x00DFE6E9);
+            }
+            cy += box_h + 4;
+
+            /* Aplicar button */
+            int btn_x = cx, btn_y = cy, btn_w = 80, btn_h = 22;
+            canvas_fill_rounded_rect(btn_x, btn_y, btn_w, btn_h, 3, 0x000984E3);
+            canvas_draw_string(btn_x + 12, btn_y + 5, "Aplicar", 0x00FFFFFF, COLOR_TRANSPARENT);
+            cy += btn_h + 8;
+
+            /* Status message */
+            if (wp_status[0])
+                canvas_draw_string(cx, cy, wp_status, 0x0000B894, COLOR_TRANSPARENT);
             break;
         }
-        case 2: { /* Usuarios */
+        case 2: { 
             canvas_draw_string(cx, cy, "Usuarios", lbl, COLOR_TRANSPARENT); cy += 24;
             if (current_user) {
                 canvas_draw_string(cx, cy, "Logado:", lbl, COLOR_TRANSPARENT);
@@ -129,7 +163,7 @@ static void set_on_paint(window_t *win) {
             }
             break;
         }
-        case 3: { /* Sobre */
+        case 3: { 
             canvas_draw_string(cx, cy, "Sobre o Krypx", lbl, COLOR_TRANSPARENT); cy += 24;
             canvas_draw_string(cx, cy, "Krypx OS v" KRYPX_VERSION_STR, val, COLOR_TRANSPARENT); cy += 20;
             canvas_draw_string(cx, cy, "Custom Bare-Metal OS", val, COLOR_TRANSPARENT); cy += 20;
@@ -142,11 +176,72 @@ static void set_on_paint(window_t *win) {
 
 static void set_on_keydown(window_t *win, char c) {
     (void)win;
+    if (wp_input_active) {
+        if (c == '\r' || c == '\n') {
+            /* Apply wallpaper */
+            if (wp_path[0]) {
+                desktop_set_wallpaper(wp_path);
+                memcpy(wp_status, "Papel de parede aplicado!", 26);
+            }
+            wp_input_active = false;
+        } else if (c == 27) {
+            wp_input_active = false;
+        } else if (c == 8 || c == 127) {
+            int l = (int)strlen(wp_path);
+            if (l > 0) wp_path[l-1] = '\0';
+        } else if (c >= 32 && strlen(wp_path) < 127) {
+            int l = (int)strlen(wp_path);
+            wp_path[l] = c;
+            wp_path[l+1] = '\0';
+        }
+        return;
+    }
     int nsec = 0;
     while (sections[nsec]) nsec++;
     if (c == '\t' || c == 's') {
         sel_section = (sel_section + 1) % nsec;
     }
+}
+
+static void set_on_click(window_t *win, int mx, int my) {
+    /* Sidebar section selection */
+    int bx = win->content_x, by = win->content_y;
+    int sidebar_w = 100;
+    if (mx >= bx && mx < bx + sidebar_w) {
+        int i;
+        for (i = 0; sections[i]; i++) {
+            int sy = by + 8 + i * 36;
+            if (my >= sy-2 && my < sy+30) {
+                sel_section = i;
+                wp_input_active = false;
+                return;
+            }
+        }
+        return;
+    }
+    /* Content area clicks — only relevant in Exibicao */
+    if (sel_section != 1) return;
+    int cx = bx + sidebar_w + 12;
+    /* Wallpaper section starts after: title(24) + res(20) + depth(20) + driver(28) + label(20) + hint(18) = 130px */
+    int wp_top = by + 12 + 130;
+    int box_y  = wp_top;      /* path input box */
+    int btn_y  = box_y + 24;  /* Aplicar button */
+    /* Click on path input box */
+    if (mx >= cx && mx < cx+210 && my >= box_y && my < box_y+20) {
+        wp_input_active = true;
+        wp_status[0] = '\0';
+        return;
+    }
+    /* Click on Aplicar button */
+    if (mx >= cx && mx < cx+80 && my >= btn_y && my < btn_y+22) {
+        wp_input_active = false;
+        if (wp_path[0]) {
+            desktop_set_wallpaper(wp_path);
+            memcpy(wp_status, "Papel de parede aplicado!", 26);
+        }
+        return;
+    }
+    wp_input_active = false;
 }
 
 void settings_open(void) {
@@ -160,6 +255,7 @@ void settings_open(void) {
     set_win->bg_color   = 0x001E272E;
     set_win->on_paint   = set_on_paint;
     set_win->on_keydown = set_on_keydown;
+    set_win->on_click   = set_on_click;
     { process_t *p = process_create_app("Configuracoes", 32 * 1024);
       if (p) set_win->proc_pid = p->pid; }
 }

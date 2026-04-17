@@ -19,6 +19,7 @@ endif
 AS      := nasm
 ISO     := grub2-mkrescue
 QEMU    := qemu-system-i386
+KVM_FLAG := $(shell [ -e /dev/kvm ] && echo "-enable-kvm" || echo "-accel tcg,tb-size=32")
 
 # ============================================================
 # Flags
@@ -88,7 +89,12 @@ C_SOURCES   := compat/detect.c \
                apps/task_manager.c \
                apps/about.c \
                apps/network_manager.c \
-               apps/settings.c
+               apps/settings.c \
+               apps/file_manager.c \
+               apps/text_editor.c \
+               lib/png.c \
+               lib/jpeg.c \
+               drivers/ac97.c
 
 # Objetos gerados
 ASM_OBJECTS := $(ASM_SOURCES:.asm=.o)
@@ -113,31 +119,40 @@ iso: kernel.bin
 	@mkdir -p iso/boot/grub
 	cp kernel.bin iso/boot/kernel.bin
 	cp grub.cfg iso/boot/grub/grub.cfg
-	$(ISO) -o Krypx.iso iso/
+	$(ISO) --modules="fat iso9660 part_msdos part_gpt search" -o Krypx.iso iso/
 	@echo "[ISO] Krypx.iso gerada"
 	@ls -lh Krypx.iso
 
+# Mata instâncias antigas antes de iniciar (FIX RAM: previne ~300MB por instância acumulada)
+kill-qemu:
+	@-pkill -f "qemu-system-i386" 2>/dev/null || true
+	@sleep 0.3
+
 # Roda no QEMU (modo normal)
-run: iso
+run: iso kill-qemu
 	$(QEMU) -cdrom Krypx.iso -m 256M \
 	    -vga std \
 	    -boot d \
 	    -serial stdio \
+	    -audiodev pa,id=snd0 -device AC97,audiodev=snd0 \
 	    -no-reboot \
-	    -no-shutdown
+	    -no-shutdown \
+	    $(KVM_FLAG)
 
-# Roda com rede (e1000)
-run-net: iso
+# Roda com rede (e1000) + audio
+run-net: iso kill-qemu
 	$(QEMU) -cdrom Krypx.iso -m 256M \
 	    -vga std \
 	    -boot d \
 	    -serial stdio \
 	    -netdev user,id=net0 -device e1000,netdev=net0 \
+	    -audiodev pa,id=snd0 -device AC97,audiodev=snd0 \
 	    -no-reboot \
-	    -no-shutdown
+	    -no-shutdown \
+	    $(KVM_FLAG)
 
-# Roda com debug GDB (para debugar: gdb kernel.bin -ex "target remote :1234")
-run-debug: iso
+# Roda com debug GDB
+run-debug: iso kill-qemu
 	$(QEMU) -cdrom Krypx.iso -m 256M \
 	    -vga std \
 	    -boot d \
@@ -146,13 +161,14 @@ run-debug: iso
 	    -no-reboot \
 	    -no-shutdown
 
-# Roda sem ISO (direto com kernel multiboot — mais rápido para desenvolvimento)
-run-kernel: kernel.bin
+# Roda sem ISO (mais rápido para desenvolvimento)
+run-kernel: kernel.bin kill-qemu
 	$(QEMU) -kernel kernel.bin -m 256M \
 	    -vga std \
 	    -serial stdio \
 	    -no-reboot \
-	    -no-shutdown
+	    -no-shutdown \
+	    $(KVM_FLAG)
 
 # ============================================================
 # Regras de compilação

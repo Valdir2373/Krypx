@@ -339,6 +339,63 @@ static const char hid_to_ascii_shift[256] = {
     '<','>','?',0,
 };
 
+/* ─── Exported USB functions for other drivers (rtl8188eu etc.) ─────────── */
+
+bool usb_ctrl_req(uint8_t addr, uint8_t bmRT, uint8_t req,
+                  uint16_t wVal, uint16_t wIdx,
+                  void *data, uint16_t dlen, bool in) {
+    usb_setup_t s;
+    s.bmRequestType = bmRT;
+    s.bRequest      = req;
+    s.wValue        = wVal;
+    s.wIndex        = wIdx;
+    s.wLength       = dlen;
+    return uhci_control(addr, &s, dlen ? data : 0, in);
+}
+
+/* Bulk transfer: build a single TD in the frame list and poll completion.
+ * Returns true if the transfer completed without error. */
+bool usb_bulk_out(uint8_t addr, uint8_t ep, const void *data, uint16_t len) {
+    if (!g_ok || !data || len == 0) return false;
+    /* Reset pool so we have space */
+    g_td_idx = 0; g_qh_idx = 0;
+    uhci_td_t *td = alloc_td();
+    if (!td) return false;
+
+    td->link   = TD_LINK_TERMINATE;
+    td->status = TD_STATUS_ACTIVE | TD_C_ERR(3);
+    td->token  = TD_TOKEN(TD_PID_OUT, addr, ep, 0, len > 64 ? 64 : len);
+    td->buf    = (uint32_t)(uintptr_t)data;
+
+    uint16_t fn = inw(g_ubase + FRNUM) & 0x3FF;
+    uint32_t old = g_fl[fn];
+    g_fl[fn] = (uint32_t)(uintptr_t)td;
+    bool ok = td_wait(td, 100);
+    g_fl[fn] = old;
+    return ok;
+}
+
+bool usb_bulk_in(uint8_t addr, uint8_t ep, void *data, uint16_t max, uint16_t *got) {
+    if (!g_ok || !data) return false;
+    g_td_idx = 0; g_qh_idx = 0;
+    uhci_td_t *td = alloc_td();
+    if (!td) return false;
+
+    memset(data, 0, max > 64 ? 64 : max);
+    td->link   = TD_LINK_TERMINATE;
+    td->status = TD_STATUS_ACTIVE | TD_C_ERR(3) | TD_STATUS_SPD;
+    td->token  = TD_TOKEN(TD_PID_IN, addr, ep, 0, max > 64 ? 64 : max);
+    td->buf    = (uint32_t)(uintptr_t)data;
+
+    uint16_t fn = inw(g_ubase + FRNUM) & 0x3FF;
+    uint32_t old = g_fl[fn];
+    g_fl[fn] = (uint32_t)(uintptr_t)td;
+    bool ok = td_wait(td, 50);
+    g_fl[fn] = old;
+    if (ok && got) *got = (uint16_t)((td->status & 0x7FF) + 1);
+    return ok;
+}
+
 void usb_hid_poll(void) {
     if (!g_ok || !g_kbd) return;
 

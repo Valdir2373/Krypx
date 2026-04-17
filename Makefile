@@ -95,10 +95,15 @@ C_SOURCES   := compat/detect.c \
                apps/image_viewer.c \
                lib/png.c \
                lib/jpeg.c \
+               lib/sha1.c \
+               lib/aes.c \
                drivers/ac97.c \
                drivers/acpi.c \
                drivers/ahci.c \
                drivers/usb_hid.c \
+               drivers/rtl8188eu.c \
+               net/wifi.c \
+               net/wpa2.c \
                gui/clipboard.c
 
 # Objetos gerados

@@ -24,6 +24,8 @@
 #include <drivers/ahci.h>
 #include <drivers/usb_hid.h>
 #include <drivers/acpi.h>
+#include <drivers/rtl8188eu.h>
+#include <net/wifi.h>
 #include <gui/desktop.h>
 #include <net/netif.h>
 #include <security/users.h>
@@ -418,6 +420,17 @@ void kernel_main(uint32_t magic, uint32_t mbi_addr) {
     ser_puts("[DBG] usb_hid_init\r\n");
     usb_hid_init();
     if (usb_kbd_available()) log_ok("USB: teclado HID detectado");
+
+    /* WiFi RTL8188EU */
+    ser_puts("[DBG] rtl8188eu_init\r\n");
+    wifi_init();
+    if (rtl8188eu_init()) {
+        log_ok("WiFi: RTL8188EU detectado — use Gerenciador de Rede");
+    } else {
+        vga_set_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+        vga_puts("[WARN] WiFi: sem adaptador RTL8188EU (coloque rtl8188eu.bin no disco)\n");
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+    }
 
     ser_puts("[DBG] step13: netif_init\r\n");
     log_info("Inicializando pilha de rede...");

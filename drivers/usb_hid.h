@@ -5,10 +5,15 @@
 #include <types.h>
 
 void usb_hid_init(void);
-bool usb_kbd_available(void);   /* true if USB keyboard detected */
-bool usb_mouse_available(void); /* true if USB mouse detected */
-
-/* Called from USB interrupt / polling — feeds keyboard buffer */
+bool usb_kbd_available(void);
+bool usb_mouse_available(void);
 void usb_hid_poll(void);
+
+/* Generic USB helpers — used by other USB drivers (rtl8188eu etc.) */
+bool usb_ctrl_req(uint8_t addr, uint8_t bmRequestType, uint8_t bRequest,
+                  uint16_t wValue, uint16_t wIndex,
+                  void *data, uint16_t len, bool in);
+bool usb_bulk_out(uint8_t addr, uint8_t ep, const void *data, uint16_t len);
+bool usb_bulk_in (uint8_t addr, uint8_t ep, void *data, uint16_t max, uint16_t *got);
 
 #endif

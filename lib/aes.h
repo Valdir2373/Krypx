@@ -1,0 +1,29 @@
+
+#ifndef _LIB_AES_H
+#define _LIB_AES_H
+
+#include <types.h>
+
+/* AES-128: 10 rounds, 16-byte key/block */
+typedef struct { uint32_t rk[44]; } aes128_ctx_t;
+
+void aes128_init(aes128_ctx_t *ctx, const uint8_t key[16]);
+void aes128_encrypt(const aes128_ctx_t *ctx, const uint8_t in[16], uint8_t out[16]);
+void aes128_decrypt(const aes128_ctx_t *ctx, const uint8_t in[16], uint8_t out[16]);
+
+/* AES-CCMP used by WPA2 — in-place encrypt/decrypt of 'data_len' bytes.
+ * nonce: 13 bytes, aad: additional auth data, mic_out: 8-byte tag.
+ * Returns 0 on decrypt OK, -1 on MIC mismatch. */
+void aes_ccmp_encrypt(const uint8_t key[16],
+                      const uint8_t nonce[13],
+                      const uint8_t *aad, uint16_t aad_len,
+                      uint8_t *data, uint16_t data_len,
+                      uint8_t mic_out[8]);
+
+int  aes_ccmp_decrypt(const uint8_t key[16],
+                      const uint8_t nonce[13],
+                      const uint8_t *aad, uint16_t aad_len,
+                      uint8_t *data, uint16_t data_len,
+                      const uint8_t mic_in[8]);
+
+#endif

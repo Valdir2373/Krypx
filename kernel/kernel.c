@@ -32,8 +32,12 @@
 #include <security/aslr.h>
 #include <compat/detect.h>
 #include <compat/linux_compat.h>
+#include <compat/linux_compat64.h>
 #include <compat/win_compat.h>
 #include <proc/elf.h>
+#include <fs/devfs.h>
+#include <fs/procfs.h>
+#include <gui/x11_server.h>
 
 
 static void ser_init(void) {
@@ -133,30 +137,21 @@ static void keyboard_echo_loop(void) {
 
 static void compat_try_run(const char *path) {
     vfs_node_t *node = vfs_resolve(path);
-    if (!node) return;
+    if (!node) { ser_puts("[COMPAT] Arquivo nao encontrado: "); ser_puts(path); ser_puts("\r\n"); return; }
 
+    ser_puts("[COMPAT] Binario encontrado: "); ser_puts(path); ser_puts("\r\n");
     vga_set_color(VGA_COLOR_CYAN, VGA_COLOR_BLACK);
-    vga_puts("[COMPAT] Binario encontrado: ");
-    vga_puts(path);
-    vga_puts(" (");
-    vga_put_dec(node->size);
-    vga_puts(" bytes)\n");
+    vga_puts("[COMPAT] Binario encontrado: "); vga_puts(path); vga_puts("\n");
     vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
 
-    
     uint8_t *buf = (uint8_t *)kmalloc(node->size);
-    if (!buf) {
-        vga_puts("[COMPAT] ERRO: kmalloc falhou\n");
-        return;
-    }
+    if (!buf) { ser_puts("[COMPAT] ERRO: kmalloc falhou\r\n"); vga_puts("[COMPAT] ERRO: kmalloc falhou\n"); return; }
     vfs_read(node, 0, node->size, buf);
 
-    
     binary_type_t btype = detect_binary_type(buf, node->size);
+    ser_puts("[COMPAT] Tipo: "); ser_puts(binary_type_name(btype)); ser_puts("\r\n");
     vga_set_color(VGA_COLOR_CYAN, VGA_COLOR_BLACK);
-    vga_puts("[COMPAT] Tipo detectado: ");
-    vga_puts(binary_type_name(btype));
-    vga_puts("\n");
+    vga_puts("[COMPAT] Tipo: "); vga_puts(binary_type_name(btype)); vga_puts("\n");
     vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
 
     if (btype == BINARY_WINDOWS_PE) {
@@ -195,9 +190,9 @@ static void compat_try_run(const char *path) {
     kfree(buf);  
 
     
-    proc->ctx.eip    = res.entry_point;
-    proc->ctx.esp    = res.user_stack_top;
-    proc->ctx.eflags = 0x202;  
+    proc->ctx.rip    = res.entry_point;
+    proc->ctx.rsp    = res.user_stack_top;
+    proc->ctx.rflags = 0x202;
     proc->heap_start = res.heap_base;
     proc->heap_end   = res.heap_base;
 
@@ -207,30 +202,14 @@ static void compat_try_run(const char *path) {
     
     scheduler_add(proc);
 
+    ser_puts("[COMPAT] Processo '"); ser_puts(pname); ser_puts("' iniciado\r\n");
     vga_set_color(VGA_COLOR_GREEN, VGA_COLOR_BLACK);
-    vga_puts("[COMPAT] Processo '");
-    vga_puts(pname);
-    vga_puts("' iniciado (PID ");
-    vga_put_dec(proc->pid);
-    vga_puts(", entry=0x");
-    {
-        
-        uint32_t v = res.entry_point;
-        char hex[9]; int hi;
-        hex[8] = '\0';
-        for (hi = 7; hi >= 0; hi--) {
-            uint8_t nibble = (uint8_t)(v & 0xF);
-            hex[hi] = nibble < 10 ? '0' + nibble : 'A' + nibble - 10;
-            v >>= 4;
-        }
-        vga_puts(hex);
-    }
-    vga_puts(")\n");
+    vga_puts("[COMPAT] Processo '"); vga_puts(pname); vga_puts("' iniciado\n");
     vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
 }
 
 
-void kernel_main(uint32_t magic, uint32_t mbi_addr) {
+void kernel_main(uint64_t magic, uint64_t mbi_addr) {
     multiboot_info_t *mbi = (multiboot_info_t *)mbi_addr;
 
     ser_init();  
@@ -301,8 +280,8 @@ void kernel_main(uint32_t magic, uint32_t mbi_addr) {
     
     ser_puts("[DBG] step9: heap_init\r\n");
     log_info("Inicializando heap do kernel...");
-    uint32_t heap_start_addr = 0x800000;
-    heap_init(heap_start_addr, 16 * 1024 * 1024);  /* 16 MB iniciais */
+    uint64_t heap_start_addr = 0x800000ULL;
+    heap_init((uint32_t)heap_start_addr, 16 * 1024 * 1024);
     log_ok("Heap do kernel pronto (16 MB, kmalloc/kfree disponiveis)");
     ser_puts("[DBG] step9: ok\r\n");
 
@@ -363,7 +342,12 @@ void kernel_main(uint32_t magic, uint32_t mbi_addr) {
         vfs_init();
     }
 
-    
+    /* Montar /dev e /proc sobre o VFS */
+    devfs_init();
+    procfs_init();
+    log_ok("devfs e procfs montados (/dev /proc)");
+
+
     ser_puts("[DBG] step12: process_init\r\n");
     log_info("Inicializando processos e scheduler...");
     process_init();
@@ -501,8 +485,9 @@ void kernel_main(uint32_t magic, uint32_t mbi_addr) {
     if (fb_init(mbi)) {
         log_ok("Framebuffer VBE pronto — iniciando GUI");
         ser_puts("[DBG] step15: GUI start\r\n");
+        x11_server_init();
         desktop_init();
-        desktop_run();   
+        desktop_run();
     } else {
         vga_set_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
         vga_puts("[WARN] Sem framebuffer VBE — modo texto\n");

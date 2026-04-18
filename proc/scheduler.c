@@ -1,8 +1,4 @@
-/*
- * proc/scheduler.c — Round-Robin preemptivo com time slice de 20 ms
- * Chamado pelo PIT timer (IRQ0) a cada tick.
- * Context switch em Assembly puro (sem setjmp/longjmp).
- */
+
 
 #include <proc/scheduler.h>
 #include <proc/process.h>
@@ -10,24 +6,20 @@
 #include <kernel/timer.h>
 #include <kernel/gdt.h>
 #include <mm/vmm.h>
+#include <include/io.h>
 #include <types.h>
 
-/* Ponteiro da fila circular de processos */
-static process_t *run_queue  = 0;   /* Cabeça da fila */
-static process_t *current    = 0;   /* Processo em execução */
+static process_t *run_queue  = 0;
+static process_t *current    = 0;
 static bool       enabled    = false;
-static uint32_t   ticks_used = 0;   /* Ticks do time slice atual */
+static uint32_t   ticks_used = 0;
 
-/* Context switch em Assembly:
- * Salva contexto de 'prev', carrega contexto de 'next'.
- * Assinatura: void context_switch(context_t *prev, context_t *next)
- */
 extern void context_switch(context_t *prev, context_t *next);
 
 void scheduler_init(void) {
-    run_queue = 0;
-    current   = 0;
-    enabled   = false;
+    run_queue  = 0;
+    current    = 0;
+    enabled    = false;
     ticks_used = 0;
 }
 
@@ -36,9 +28,8 @@ void scheduler_add(process_t *proc) {
 
     if (!run_queue) {
         run_queue  = proc;
-        proc->next = proc;   /* Fila circular com um elemento */
+        proc->next = proc;
         if (!current) {
-            /* Primeiro processo — já está rodando, não troca contexto */
             current     = proc;
             proc->state = PROC_RUNNING;
         } else {
@@ -48,11 +39,10 @@ void scheduler_add(process_t *proc) {
     }
 
     proc->state = PROC_READY;
-    /* Insere após a cabeça */
     process_t *last = run_queue;
     while (last->next != run_queue) last = last->next;
-    last->next  = proc;
-    proc->next  = run_queue;
+    last->next = proc;
+    proc->next = run_queue;
 }
 
 void scheduler_remove(process_t *proc) {
@@ -75,7 +65,6 @@ void scheduler_remove(process_t *proc) {
 void scheduler_enable(void)  { enabled = true; }
 void scheduler_disable(void) { enabled = false; }
 
-/* Chamado pelo timer handler — verifica se deve trocar processo */
 void schedule(void) {
     if (!enabled || !run_queue) return;
 
@@ -83,7 +72,6 @@ void schedule(void) {
     if (ticks_used < TIMESLICE_MS) return;
     ticks_used = 0;
 
-    /* Procura próximo processo READY */
     process_t *next = (current && current->next) ? current->next : run_queue;
     process_t *start = next;
 
@@ -92,27 +80,52 @@ void schedule(void) {
         next = next->next;
     } while (next != start);
 
-    if (next == current) return;  /* Só um processo ativo */
+    if (next == current) return;
 
-    /* Troca de processo */
+    /* Serial trace for first 5 context switches */
+    {
+        static uint32_t sw_count = 0;
+        if (sw_count < 5) {
+            const char pfx[] = "[SW>";
+            uint32_t i;
+            sw_count++;
+            for (i = 0; pfx[i]; i++) {
+                while (!(inb(0x3FD) & 0x20)) {}
+                outb(0x3F8, pfx[i]);
+            }
+            while (!(inb(0x3FD) & 0x20)) {}
+            outb(0x3F8, (uint8_t)('0' + next->pid / 10));
+            while (!(inb(0x3FD) & 0x20)) {}
+            outb(0x3F8, (uint8_t)('0' + next->pid % 10));
+            while (!(inb(0x3FD) & 0x20)) {}
+            outb(0x3F8, ']');
+            while (!(inb(0x3FD) & 0x20)) {}
+            outb(0x3F8, '\r');
+            while (!(inb(0x3FD) & 0x20)) {}
+            outb(0x3F8, '\n');
+        }
+    }
+
     process_t *prev = current;
     current = next;
 
-    if (prev) prev->state = PROC_READY;
+    if (prev && prev->state != PROC_ZOMBIE) prev->state = PROC_READY;
     current->state = PROC_RUNNING;
 
-    /* Atualiza ESP0 do TSS para a kernel stack do novo processo */
+    process_set_current(current);
     tss_set_kernel_stack(current->kernel_stack);
 
-    /* Troca page directory (só se realmente diferente e válido) */
-    uint32_t new_cr3 = current->ctx.cr3;
-    uint32_t old_cr3 = prev ? prev->ctx.cr3 : 0;
-    if (new_cr3 && new_cr3 != old_cr3) {
-        vmm_switch_address_space((uint32_t *)new_cr3);
+    /* Keep SYSCALL instruction's kernel RSP in sync with the running process */
+    if (current->kernel_stack) {
+        extern uint64_t g_syscall_kernel_rsp;
+        g_syscall_kernel_rsp = current->kernel_stack;
     }
 
-    /* Context switch: salva prev, carrega next */
-    if (prev) {
+    uint64_t new_cr3 = current->ctx.cr3;
+    uint64_t old_cr3 = prev ? prev->ctx.cr3 : 0;
+    if (new_cr3 && new_cr3 != old_cr3)
+        vmm_switch_address_space((pml4e_t *)new_cr3);
+
+    if (prev)
         context_switch(&prev->ctx, &current->ctx);
-    }
 }

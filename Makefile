@@ -1,38 +1,26 @@
-# Makefile — Sistema de build do Krypx
-# Usa i686-elf-gcc (cross-compiler) se disponível, senão gcc -m32 como fallback.
-# Para instalar o cross-compiler: https://wiki.osdev.org/GCC_Cross-Compiler
+# Makefile — Sistema de build do Krypx (x86_64)
 
-# ============================================================
-# Detecta toolchain disponível
-# ============================================================
-ifeq ($(shell which i686-elf-gcc 2>/dev/null),)
-    CC      := gcc -m32
-    LD      := ld -m elf_i386
-    OBJCOPY := objcopy
-    $(info [WARN] i686-elf-gcc nao encontrado — usando gcc -m32 como fallback)
-else
-    CC      := i686-elf-gcc
-    LD      := i686-elf-ld
-    OBJCOPY := i686-elf-objcopy
-endif
-
+CC      := gcc
+LD      := ld
 AS      := nasm
+OBJCOPY := objcopy
 ISO     := grub2-mkrescue
-QEMU    := qemu-system-i386
+QEMU    := qemu-system-x86_64
 KVM_FLAG := $(shell [ -e /dev/kvm ] && echo "-enable-kvm" || echo "-accel tcg,tb-size=32")
 
 # ============================================================
 # Flags
 # ============================================================
-CFLAGS := -std=gnu99 -ffreestanding -O2 -Wall -Wextra \
+CFLAGS := -m64 -mno-red-zone -mno-sse -mno-mmx -mcmodel=small \
+          -std=gnu99 -ffreestanding -O2 -Wall -Wextra \
           -fno-exceptions -fno-stack-protector -fno-builtin \
           -fno-pie -fno-pic \
           -nostdlib -nostdinc \
           -I. -Iinclude -Ilib -Idrivers -Ifs -Imm -Iproc -Inet -Igui -Isecurity -Iapps -Icompat
 
-ASFLAGS := -f elf32
+ASFLAGS := -f elf64
 
-LDFLAGS := -T linker.ld -nostdlib
+LDFLAGS := -T linker.ld -nostdlib -m elf_x86_64 -z max-page-size=0x1000
 
 # ============================================================
 # Arquivos fonte
@@ -41,10 +29,12 @@ ASM_SOURCES := boot/boot.asm \
                boot/gdt.asm \
                boot/idt.asm \
                boot/isr.asm \
-               boot/switch.asm
+               boot/switch.asm \
+               boot/syscall_entry.asm
 
 C_SOURCES   := compat/detect.c \
                compat/linux_compat.c \
+               compat/linux_compat64.c \
                compat/win_compat.c \
                proc/elf.c \
                kernel/kernel.c \
@@ -63,6 +53,8 @@ C_SOURCES   := compat/detect.c \
                lib/string.c \
                fs/vfs.c \
                fs/fat32.c \
+               fs/devfs.c \
+               fs/procfs.c \
                proc/process.c \
                proc/scheduler.c \
                kernel/syscall.c \
@@ -70,6 +62,7 @@ C_SOURCES   := compat/detect.c \
                gui/canvas.c \
                gui/window.c \
                gui/desktop.c \
+               gui/x11_server.c \
                net/net.c \
                net/ethernet.c \
                net/arp.c \
@@ -114,7 +107,7 @@ ALL_OBJECTS := $(ASM_OBJECTS) $(C_OBJECTS)
 # ============================================================
 # Alvos principais
 # ============================================================
-.PHONY: all iso run run-debug clean
+.PHONY: all iso run run-debug clean kill-qemu
 
 all: kernel.bin
 
@@ -133,37 +126,35 @@ iso: kernel.bin
 	@echo "[ISO] Krypx.iso gerada"
 	@ls -lh Krypx.iso
 
-# Mata instâncias antigas antes de iniciar (FIX RAM: previne ~300MB por instância acumulada)
+# Mata instâncias antigas antes de iniciar
 kill-qemu:
-	@-pkill -f "qemu-system-i386" 2>/dev/null || true
+	@-pkill -f "qemu-system-x86_64" 2>/dev/null || true
 	@sleep 0.3
 
 # Roda no QEMU (modo normal)
 run: iso kill-qemu
-	$(QEMU) -cdrom Krypx.iso -m 256M \
+	$(QEMU) -cdrom Krypx.iso -m 512M \
 	    -vga std \
 	    -boot d \
 	    -serial stdio \
-	    -audiodev pa,id=snd0 -device AC97,audiodev=snd0 \
 	    -no-reboot \
 	    -no-shutdown \
 	    $(KVM_FLAG)
 
-# Roda com rede (e1000) + audio
+# Roda com rede (e1000)
 run-net: iso kill-qemu
-	$(QEMU) -cdrom Krypx.iso -m 256M \
+	$(QEMU) -cdrom Krypx.iso -m 512M \
 	    -vga std \
 	    -boot d \
 	    -serial stdio \
 	    -netdev user,id=net0 -device e1000,netdev=net0 \
-	    -audiodev pa,id=snd0 -device AC97,audiodev=snd0 \
 	    -no-reboot \
 	    -no-shutdown \
 	    $(KVM_FLAG)
 
 # Roda com debug GDB
 run-debug: iso kill-qemu
-	$(QEMU) -cdrom Krypx.iso -m 256M \
+	$(QEMU) -cdrom Krypx.iso -m 512M \
 	    -vga std \
 	    -boot d \
 	    -serial stdio \
@@ -173,7 +164,7 @@ run-debug: iso kill-qemu
 
 # Roda sem ISO (mais rápido para desenvolvimento)
 run-kernel: kernel.bin kill-qemu
-	$(QEMU) -kernel kernel.bin -m 256M \
+	$(QEMU) -kernel kernel.bin -m 512M \
 	    -vga std \
 	    -serial stdio \
 	    -no-reboot \
@@ -195,10 +186,8 @@ run-kernel: kernel.bin kill-qemu
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # ============================================================
-# Binário de teste Linux (para o ambiente de compatibilidade)
+# Binário de teste Linux (i386 para compat layer)
 # ============================================================
-
-# Compila o programa de teste Linux (precisa de gcc -m32 e libc 32-bit)
 test-linux-binary:
 	@echo "[CC]  tools/test_linux (Linux i386 static, no libc)"
 	gcc -m32 -static -nostdlib -nostartfiles \
@@ -208,7 +197,7 @@ test-linux-binary:
 	strip tools/test_linux
 	@echo "[OK]  tools/test_linux gerado ($$(stat -c%s tools/test_linux) bytes)"
 
-# Cria disk.img FAT32 e instala o binário de teste
+# Cria disk.img FAT32
 disk.img:
 	@echo "[DISK] Criando disk.img (64 MB, FAT32)..."
 	dd if=/dev/zero of=disk.img bs=1M count=64 status=none
@@ -222,13 +211,14 @@ install-test: test-linux-binary disk.img
 
 # Roda com disco (para testar o compat layer)
 run-compat: iso disk.img
-	$(QEMU) -cdrom Krypx.iso -m 256M \
+	$(QEMU) -cdrom Krypx.iso -m 512M \
 	    -vga std \
 	    -boot d \
 	    -serial stdio \
 	    -drive file=disk.img,format=raw,if=ide \
 	    -no-reboot \
-	    -no-shutdown
+	    -no-shutdown \
+	    $(KVM_FLAG)
 
 # ============================================================
 # Limpeza

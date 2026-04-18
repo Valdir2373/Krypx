@@ -271,6 +271,17 @@ typedef struct {
     uint64_t iov_len;
 } linux64_iovec_t;
 
+typedef struct {
+    uint64_t msg_name;        /* +0  */
+    uint32_t msg_namelen;     /* +8  */
+    uint32_t __pad1;          /* +12 */
+    uint64_t msg_iov;         /* +16 */
+    uint64_t msg_iovlen;      /* +24 */
+    uint64_t msg_control;     /* +32 */
+    uint64_t msg_controllen;  /* +40 */
+    int32_t  msg_flags;       /* +48 */
+} linux64_msghdr_t;
+
 /* ── AT_FDCWD ────────────────────────────────────────────────────────────── */
 #define AT_FDCWD  ((int64_t)-100)
 
@@ -1427,6 +1438,117 @@ static int64_t lx64_getsockname(uint64_t sockfd, linux64_sockaddr_t *addr, uint6
     return 0;
 }
 
+/* ── sendmsg / recvmsg ───────────────────────────────────────────────────── */
+
+static int64_t lx64_sendmsg(uint64_t sockfd, linux64_msghdr_t *msg, uint64_t flags) {
+    (void)flags;
+    if (!msg) return ERR(EFAULT);
+    linux64_iovec_t *iov = (linux64_iovec_t *)(uintptr_t)msg->msg_iov;
+    uint64_t iovcnt = msg->msg_iovlen;
+    if (!iov || !iovcnt) return 0;
+    int64_t total = 0;
+    uint64_t i;
+    for (i = 0; i < iovcnt; i++) {
+        if (!iov[i].iov_len) continue;
+        int64_t r = lx64_write(sockfd, (const char *)(uintptr_t)iov[i].iov_base, iov[i].iov_len);
+        if (r < 0) return (total > 0) ? total : r;
+        total += r;
+    }
+    return total;
+}
+
+static int64_t lx64_recvmsg(uint64_t sockfd, linux64_msghdr_t *msg, uint64_t flags) {
+    (void)flags;
+    if (!msg) return ERR(EFAULT);
+    linux64_iovec_t *iov = (linux64_iovec_t *)(uintptr_t)msg->msg_iov;
+    uint64_t iovcnt = msg->msg_iovlen;
+    /* Zero out control length — we don't support ancillary data */
+    if (msg->msg_controllen) msg->msg_controllen = 0;
+    if (!iov || !iovcnt) return 0;
+    int64_t total = 0;
+    uint64_t i;
+    for (i = 0; i < iovcnt; i++) {
+        if (!iov[i].iov_len) continue;
+        int64_t r = lx64_read(sockfd, (char *)(uintptr_t)iov[i].iov_base, iov[i].iov_len);
+        if (r < 0) return (total > 0) ? total : r;
+        total += r;
+        if ((uint64_t)r < iov[i].iov_len) break; /* partial read — stop */
+    }
+    return total;
+}
+
+/* ── socketpair ──────────────────────────────────────────────────────────── */
+
+static int64_t lx64_socketpair(uint64_t domain, uint64_t type, uint64_t proto, int32_t *fds) {
+    (void)domain; (void)proto;
+    if (!fds) return ERR(EFAULT);
+    process_t *p = process_current();
+    if (!p) return ERR(ENOMEM);
+
+    uint64_t base_type = type & ~(uint64_t)(SOCK_NONBLOCK | 524288);
+    if (base_type != SOCK_STREAM_LX && base_type != SOCK_DGRAM_LX) return ERR(EAFNOSUPPORT);
+
+    /* Allocate two ksocks */
+    int k0 = alloc_ksock();
+    if (k0 < 0) return ERR(ENFILE);
+
+    /* Temporarily mark k0 used so alloc_ksock won't return it again */
+    ksocks[k0].type = KRYPX_SOCK_UNIX;
+    int k1 = alloc_ksock();
+    if (k1 < 0) { ksocks[k0].type = KRYPX_SOCK_FREE; return ERR(ENFILE); }
+
+    /* Allocate two unix_sock slots */
+    int u0 = -1, u1 = -1;
+    uint32_t j;
+    for (j = 0; j < MAX_UNIX_SOCKETS; j++) {
+        if (!unix_socks[j].used) { u0 = (int)j; unix_socks[j].used = true; break; }
+    }
+    for (j = 0; j < MAX_UNIX_SOCKETS; j++) {
+        if (!unix_socks[j].used) { u1 = (int)j; unix_socks[j].used = true; break; }
+    }
+    if (u0 < 0 || u1 < 0) {
+        if (u0 >= 0) unix_socks[u0].used = false;
+        if (u1 >= 0) unix_socks[u1].used = false;
+        ksocks[k0].type = KRYPX_SOCK_FREE;
+        ksocks[k1].type = KRYPX_SOCK_FREE;
+        return ERR(ENFILE);
+    }
+
+    memset(&unix_socks[u0], 0, sizeof(unix_sock_t));
+    memset(&unix_socks[u1], 0, sizeof(unix_sock_t));
+    unix_socks[u0].used = true;  unix_socks[u0].connected = true; unix_socks[u0].peer = u1;
+    unix_socks[u1].used = true;  unix_socks[u1].connected = true; unix_socks[u1].peer = u0;
+
+    /* Set up ksocks and vfs nodes */
+    ksocks[k0].type = KRYPX_SOCK_UNIX; ksocks[k0].idx = u0;
+    ksocks[k1].type = KRYPX_SOCK_UNIX; ksocks[k1].idx = u1;
+
+    memset(&sock_nodes[k0], 0, sizeof(vfs_node_t));
+    sock_nodes[k0].flags = VFS_CHARDEV; sock_nodes[k0].impl = (uint32_t)k0;
+    sock_nodes[k0].read  = sock_read_fn; sock_nodes[k0].write = sock_write_fn;
+    memcpy(sock_nodes[k0].name, "socket", 7);
+
+    memset(&sock_nodes[k1], 0, sizeof(vfs_node_t));
+    sock_nodes[k1].flags = VFS_CHARDEV; sock_nodes[k1].impl = (uint32_t)k1;
+    sock_nodes[k1].read  = sock_read_fn; sock_nodes[k1].write = sock_write_fn;
+    memcpy(sock_nodes[k1].name, "socket", 7);
+
+    /* Assign file descriptors */
+    int fd0 = -1, fd1 = -1;
+    for (j = 3; j < MAX_FDS; j++) { if (!p->fds[j]) { fd0 = (int)j; break; } }
+    for (j = fd0 + 1; (uint32_t)j < MAX_FDS; j++) { if (!p->fds[j]) { fd1 = (int)j; break; } }
+    if (fd0 < 0 || fd1 < 0) {
+        unix_socks[u0].used = false; unix_socks[u1].used = false;
+        ksocks[k0].type = KRYPX_SOCK_FREE; ksocks[k1].type = KRYPX_SOCK_FREE;
+        return ERR(EMFILE);
+    }
+
+    p->fds[fd0] = &sock_nodes[k0];
+    p->fds[fd1] = &sock_nodes[k1];
+    fds[0] = fd0; fds[1] = fd1;
+    return 0;
+}
+
 /* ── pipe ────────────────────────────────────────────────────────────────── */
 
 #define PIPE_BUF_SIZE  4096
@@ -2172,9 +2294,9 @@ void linux_syscall64_handler(syscall64_frame_t *f) {
     case SYS64_GETSOCKOPT: ret = 0; break;
     case SYS64_GETSOCKNAME: ret = lx64_getsockname(f->rdi,(linux64_sockaddr_t*)(uintptr_t)f->rsi,(uint64_t*)(uintptr_t)f->rdx); break;
     case SYS64_GETPEERNAME: ret = 0; break;
-    case 53: /* socketpair */ ret = ERR(ENOSYS); break;
-    case SYS64_SENDMSG:    ret = lx64_sendto(f->rdi,(const char*)(uintptr_t)f->rsi,f->rdx,0,0,0); break;
-    case SYS64_RECVMSG:    ret = lx64_recvfrom(f->rdi,(char*)(uintptr_t)f->rsi,f->rdx,0,0,0); break;
+    case 53: /* socketpair */ ret = lx64_socketpair(f->rdi,f->rsi,f->rdx,(int32_t*)(uintptr_t)f->r10); break;
+    case SYS64_SENDMSG:    ret = lx64_sendmsg(f->rdi,(linux64_msghdr_t*)(uintptr_t)f->rsi,f->rdx); break;
+    case SYS64_RECVMSG:    ret = lx64_recvmsg(f->rdi,(linux64_msghdr_t*)(uintptr_t)f->rsi,f->rdx); break;
 
     /* random */
     case SYS64_GETRANDOM:  ret = lx64_getrandom((char*)(uintptr_t)f->rdi,f->rsi,f->rdx); break;
@@ -2202,8 +2324,30 @@ void linux_syscall64_handler(syscall64_frame_t *f) {
     case 302: /* prlimit64 */  ret = 0; break;
     case 149: /* mlock */      ret = 0; break;
     case 150: /* munlock */    ret = 0; break;
-    case 334: /* rseq */    ret = ERR(ENOSYS); break;
-    case 435: /* clone3 */  ret = ERR(ENOSYS); break;
+    case 334: /* rseq */         ret = ERR(ENOSYS); break;
+    case 435: /* clone3 */       ret = ERR(ENOSYS); break;
+    case 275: /* splice */       ret = ERR(ENOSYS); break;
+    case 285: /* fallocate */    ret = 0; break;
+    case 316: /* renameat2 */    ret = 0; break;
+    case 326: /* copy_file_range */ ret = ERR(ENOSYS); break;
+    case 139: /* sched_getparam */     ret = 0; break;
+    case 141: /* sched_setaffinity */  ret = 0; break;
+    case 142: /* sched_getaffinity */  ret = 0; break;
+    case 115: /* getgroups */          ret = 0; break;
+    case 116: /* setgroups */          ret = 0; break;
+    case 122: /* getpgrp */            ret = (int64_t)process_current()->pid; break;
+    case 124: /* getsid */             ret = (int64_t)process_current()->pid; break;
+    case 125: /* capget */             ret = 0; break;
+    case 126: /* capset */             ret = 0; break;
+    case 130: /* mknod */              ret = 0; break;
+    case 132: /* utime */              ret = 0; break;
+    case 133: /* mknodat */            ret = 0; break;
+    case 151: /* mlockall */           ret = 0; break;
+    case 152: /* munlockall */         ret = 0; break;
+    case 153: /* vhangup */            ret = 0; break;
+    case 154: /* modify_ldt */         ret = ERR(ENOSYS); break;
+    case 203: /* sched_setaffinity2 */ ret = 0; break;
+    case 204: /* sched_getaffinity2 */ ret = 0; break;
 
     default:
         ser64("[LX64] UNHANDLED syscall #");

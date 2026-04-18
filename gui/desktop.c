@@ -27,6 +27,7 @@
 #include <apps/file_manager.h>
 #include <apps/text_editor.h>
 #include <apps/image_viewer.h>
+#include <apps/kpkg.h>
 #include <drivers/ac97.h>
 #include <drivers/acpi.h>
 #include <lib/png.h>
@@ -338,97 +339,132 @@ static void term_cmd_write(const char *arg) {
 }
 
 static void term_cmd_help(void) {
-    term_puts("Comandos:\n");
-    term_puts("  ls [dir]        listar diretorio\n");
-    term_puts("  cd <dir>        mudar diretorio\n");
-    term_puts("  pwd             diretorio atual\n");
-    term_puts("  cat <arq>       mostrar conteudo\n");
-    term_puts("  write <arq> <txt>  escrever arquivo\n");
-    term_puts("  mkdir <dir>     criar diretorio\n");
-    term_puts("  rm <arq>        remover arquivo\n");
-    term_puts("  echo <txt>      imprimir texto\n");
-    term_puts("  ps              listar processos\n");
-    term_puts("  kill <pid>      matar processo\n");
-    term_puts("  ifconfig        info de rede\n");
-    term_puts("  ping <ip>       testar conexao\n");
-    term_puts("  clear           limpar terminal\n");
-    term_puts("  version         versao do sistema\n");
+    term_puts("Krypx Shell — comandos:\n");
+    term_puts("  ls [dir]              listar diretorio\n");
+    term_puts("  cd <dir>              mudar diretorio\n");
+    term_puts("  pwd                   diretorio atual\n");
+    term_puts("  cat <arq>             mostrar conteudo\n");
+    term_puts("  write <arq> <txt>     escrever arquivo\n");
+    term_puts("  cp <src> <dst>        copiar arquivo\n");
+    term_puts("  mkdir <dir>           criar diretorio\n");
+    term_puts("  rm <arq>              remover arquivo\n");
+    term_puts("  echo <txt>            imprimir texto\n");
+    term_puts("  ps                    listar processos\n");
+    term_puts("  kill <pid>            matar processo\n");
+    term_puts("  ifconfig              info de rede\n");
+    term_puts("  ping <ip>             testar conexao\n");
+    term_puts("  which <cmd>           localizar binario\n");
+    term_puts("  <caminho>             executar binario ELF\n");
+    term_puts("  kpkg install <pkg>    instalar pacote\n");
+    term_puts("  kpkg list             pacotes instalados\n");
+    term_puts("  kpkg search [nome]    buscar pacotes\n");
+    term_puts("  clear                 limpar terminal\n");
+    term_puts("  version               versao do sistema\n");
+    term_puts("  shutdown / reboot     desligar / reiniciar\n");
 }
 
-static void term_run_linux(const char *path) {
-    linux_compat_set_output(term_putchar);
+/* PATH directories to search for executables */
+static const char *exec_path[] = {
+    "",          /* absolute paths used directly */
+    "/bin",
+    "/usr/bin",
+    "/usr/local/bin",
+    "/sbin",
+    "/usr/sbin",
+    0
+};
 
-    vfs_node_t *node = vfs_resolve(path);
+/* Resolve a command name to a full path */
+static vfs_node_t *find_in_path(const char *cmd, char *full_out) {
+    if (cmd[0] == '/') {
+        vfs_node_t *n = vfs_resolve(cmd);
+        if (n) { strncpy(full_out, cmd, 255); return n; }
+        return 0;
+    }
+    int i;
+    for (i = 0; exec_path[i]; i++) {
+        if (!exec_path[i][0]) continue;
+        char buf[256];
+        strcpy(buf, exec_path[i]);
+        strcat(buf, "/");
+        strncat(buf, cmd, 255 - strlen(buf));
+        vfs_node_t *n = vfs_resolve(buf);
+        if (n && (n->flags & 0x7) != VFS_DIRECTORY) {
+            strncpy(full_out, buf, 255);
+            return n;
+        }
+    }
+    return 0;
+}
+
+static void term_run_exec(const char *path, const char *args) {
+    char full[256]; full[0] = 0;
+    vfs_node_t *node = find_in_path(path, full);
     if (!node) {
-        term_puts("Erro: arquivo nao encontrado: ");
-        term_puts(path);
-        term_puts("\n");
+        /* Also try cwd */
+        char cwdpath[256];
+        term_resolve(path, cwdpath);
+        node = vfs_resolve(cwdpath);
+        if (node) strncpy(full, cwdpath, 255);
+    }
+    if (!node) {
+        term_puts("Comando nao encontrado: "); term_puts(path); term_puts("\n");
         return;
+    }
+    if ((node->flags & 0x7) == VFS_DIRECTORY) {
+        term_puts(path); term_puts(": e um diretorio\n"); return;
     }
 
     uint32_t size = node->size;
-    if (size == 0 || size > 1024 * 1024) {
-        term_puts("Erro: tamanho invalido\n");
-        return;
-    }
+    if (size == 0) { term_puts("Erro: arquivo vazio\n"); return; }
 
+    /* Read entire binary — support large files (Firefox ~80MB) */
     uint8_t *data = (uint8_t *)kmalloc(size);
-    if (!data) {
-        term_puts("Erro: sem memoria\n");
-        return;
-    }
-
-    vfs_open(node, O_RDONLY);
+    if (!data) { term_puts("Erro: sem memoria\n"); return; }
     vfs_read(node, 0, size, data);
-    vfs_close(node);
 
-    binary_type_t btype = detect_binary_type(data, size);
-    if (btype != BINARY_LINUX_ELF && btype != BINARY_KRYPX_ELF) {
+    /* Quick ELF check */
+    if (size < 4 || data[0] != 0x7F || data[1] != 'E' ||
+        data[2] != 'L'  || data[3] != 'F') {
         kfree(data);
-        term_puts("Erro: nao e um ELF i386 Linux valido\n");
+        term_puts("Erro: nao e um ELF valido\n");
         return;
     }
 
-    if (!elf_validate(data, size)) {
-        kfree(data);
-        term_puts("Erro: ELF corrompido\n");
-        return;
-    }
-
-    
-    const char *pname = path;
-    {
-        const char *t = path;
-        while (*t) { if (*t == '/') pname = t + 1; t++; }
-    }
+    const char *pname = full[0] ? full : path;
+    const char *t = pname;
+    while (*t) { if (*t == '/') pname = t + 1; t++; }
 
     process_t *proc = process_create(pname, 0, 2);
-    if (!proc) {
-        kfree(data);
-        term_puts("Erro: falha ao criar processo\n");
-        return;
-    }
+    if (!proc) { kfree(data); term_puts("Erro: falha ao criar processo\n"); return; }
+
+    /* Inherit cwd from terminal */
+    strncpy(proc->cwd, term_cwd, 255);
 
     elf_load_result_t res;
     if (elf_load(proc, data, size, &res) != 0) {
-        kfree(data);
-        term_puts("Erro: falha ao carregar ELF\n");
-        return;
+        kfree(data); term_puts("Erro: falha ao carregar ELF\n"); return;
     }
     kfree(data);
 
-    proc->ctx.eip    = res.entry_point;
-    proc->ctx.esp    = res.user_stack_top;
-    proc->ctx.eflags = 0x202;
+    proc->ctx.rip    = res.entry_point;
+    proc->ctx.rsp    = res.user_stack_top;
+    proc->ctx.rflags = 0x202;
     proc->heap_start = res.heap_base;
     proc->heap_end   = res.heap_base;
-    proc->compat_mode = (btype == BINARY_LINUX_ELF) ? COMPAT_LINUX : COMPAT_NONE;
+    proc->compat_mode = COMPAT_LINUX;
+
+    /* Set DISPLAY env hint for X11 apps */
+    /* (ld-musl will see DISPLAY=:0 via the process env we pass) */
 
     scheduler_add(proc);
 
-    term_puts("[OK] Executando: ");
+    term_puts("[EXEC] ");
     term_puts(pname);
+    if (args && args[0]) { term_puts(" "); term_puts(args); }
     term_puts("\n");
+
+    (void)args;
 }
 
 /* Separa "cmd arg1 arg2..." → cmd e rest */
@@ -511,13 +547,85 @@ static void term_handle_command(const char *cmd) {
         extern void acpi_reboot(void);
         acpi_reboot();
     }
-    else if (strcmp(verb, "test_linux") == 0 || verb[0] == '/') {
-        const char *p = verb[0]=='/' ? verb : rest;
-        term_puts("[COMPAT] Carregando: "); term_puts(p); term_puts("\n");
-        term_run_linux(p);
+    else if (strcmp(verb, "kpkg") == 0) {
+        char verb2[32]; int v2i = 0;
+        while (rest[v2i] && rest[v2i] != ' ' && v2i < 31) { verb2[v2i] = rest[v2i]; v2i++; }
+        verb2[v2i] = 0;
+        const char *karg = rest + v2i;
+        while (*karg == ' ') karg++;
+
+        if (strcmp(verb2, "install") == 0 && karg[0]) {
+            char pkgpath[256];
+            if (karg[0] == '/') strncpy(pkgpath, karg, 255);
+            else { strcpy(pkgpath, KPKG_PKG_DIR "/"); strncat(pkgpath, karg, 200); strncat(pkgpath, ".kpkg", 255 - strlen(pkgpath)); }
+            kpkg_install(pkgpath, term_puts);
+        } else if (strcmp(verb2, "list") == 0) {
+            kpkg_list(term_puts);
+        } else if (strcmp(verb2, "search") == 0) {
+            kpkg_search(karg[0] ? karg : 0, term_puts);
+        } else {
+            term_puts("uso: kpkg install <nome> | kpkg list | kpkg search [nome]\n");
+        }
     }
+    else if (strcmp(verb, "cp") == 0) {
+        const char *s2 = rest;
+        while (*s2 && *s2 != ' ') s2++;
+        while (*s2 == ' ') s2++;
+        if (!*s2) { term_puts("uso: cp <origem> <destino>\n"); }
+        else {
+            char src[256], dst[256];
+            int n = (int)(s2 - 1 - rest); if (n > 255) n = 255;
+            int si; for (si = 0; si < n; si++) src[si] = rest[si]; src[n] = 0;
+            term_resolve(src, dst); /* resolve src */
+            char fsrc[256]; strcpy(fsrc, dst);
+            term_resolve(s2, dst);
+            /* Simple copy */
+            vfs_node_t *snode = vfs_resolve(fsrc);
+            if (!snode) { term_puts("cp: origem nao encontrada\n"); }
+            else {
+                uint8_t *cb = (uint8_t*)kmalloc(snode->size ? snode->size : 1);
+                if (cb) {
+                    vfs_read(snode, 0, snode->size, cb);
+                    char dname[256];
+                    vfs_node_t *ddir = vfs_resolve_parent(dst, dname);
+                    if (ddir && dname[0]) {
+                        vfs_node_t *dn = vfs_resolve(dst);
+                        if (!dn) { vfs_create(ddir, dname, 0644); dn = vfs_resolve(dst); }
+                        if (dn) { vfs_write(dn, 0, snode->size, cb); dn->size = snode->size; term_puts("OK\n"); }
+                    }
+                    kfree(cb);
+                }
+            }
+        }
+    }
+    else if (strcmp(verb, "mv") == 0) {
+        /* mv = cp + rm */
+        term_puts("mv: use cp + rm\n");
+    }
+    else if (strcmp(verb, "chmod") == 0 || strcmp(verb, "chown") == 0) {
+        term_puts("OK\n"); /* stub */
+    }
+    else if (strcmp(verb, "export") == 0 || strcmp(verb, "env") == 0) {
+        term_puts("DISPLAY=:0\nHOME=/home/root\nPATH=/bin:/usr/bin:/usr/local/bin\n");
+    }
+    else if (strcmp(verb, "which") == 0 && rest[0]) {
+        char fp[256];
+        vfs_node_t *n = find_in_path(rest, fp);
+        if (n) { term_puts(fp); term_puts("\n"); }
+        else { term_puts("which: nao encontrado: "); term_puts(rest); term_puts("\n"); }
+    }
+    /* Try to execute as ELF binary from PATH */
     else {
-        term_puts("Comando desconhecido: "); term_puts(verb); term_puts(" (tente 'help')\n");
+        char fp[256];
+        vfs_node_t *n = find_in_path(verb, fp);
+        if (n && (n->flags & 0x7) != VFS_DIRECTORY) {
+            term_run_exec(verb, rest);
+        } else if (verb[0] == '/') {
+            term_run_exec(verb, rest);
+        } else {
+            term_puts("Comando nao encontrado: "); term_puts(verb);
+            term_puts("\n(tente 'help' ou 'kpkg search')\n");
+        }
     }
 }
 

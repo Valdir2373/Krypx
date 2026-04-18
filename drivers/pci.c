@@ -1,15 +1,10 @@
-/*
- * drivers/pci.c — Barramento PCI: leitura/escrita no espaço de configuração
- * Varredura bruta (força bruta) de todos os slots.
- */
+
 
 #include <drivers/pci.h>
 #include <io.h>
 #include <types.h>
 
-/* ============================================================
- * Acesso ao espaço de configuração PCI via mecanismo 1
- * ============================================================ */
+
 static uint32_t pci_addr(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
     return (uint32_t)(0x80000000u
                     | ((uint32_t)bus  << 16)
@@ -46,9 +41,7 @@ void pci_write16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint16
     pci_write32(bus, slot, func, offset & ~2u, tmp);
 }
 
-/* ============================================================
- * Varredura PCI
- * ============================================================ */
+
 bool pci_find_device(uint16_t vendor, uint16_t device, pci_device_t *out) {
     uint8_t bus, slot, func;
     for (bus = 0; bus < 8; bus++) {
@@ -57,7 +50,7 @@ bool pci_find_device(uint16_t vendor, uint16_t device, pci_device_t *out) {
                 uint32_t id = pci_read32(bus, slot, func, PCI_VENDOR_ID);
                 uint16_t v  = id & 0xFFFF;
                 uint16_t d  = (id >> 16) & 0xFFFF;
-                if (v == 0xFFFF) continue;  /* Slot vazio */
+                if (v == 0xFFFF) continue;  
 
                 if (v == vendor && d == device) {
                     out->bus      = bus;
@@ -94,5 +87,5 @@ void pci_enable_bus_master(pci_device_t *dev) {
 }
 
 void pci_init(void) {
-    /* Por enquanto, varredura é feita on-demand via pci_find_device */
+    
 }

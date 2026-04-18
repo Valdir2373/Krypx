@@ -1,8 +1,4 @@
-/*
- * net/ip.c — Internet Protocol v4
- * Monta cabeçalho IP, calcula checksum e encaminha para Ethernet.
- * Recebe pacotes IP e despacha para ICMP, UDP ou TCP.
- */
+
 
 #include <net/ip.h>
 #include <net/net.h>
@@ -11,7 +7,7 @@
 #include <lib/string.h>
 #include <types.h>
 
-/* Forward declarations para protocolos de camada superior */
+
 void icmp_recv(const void *pkt, uint16_t len, uint32_t src_ip);
 void udp_recv(const void *pkt, uint16_t len, uint32_t src_ip);
 void tcp_recv_pkt(const void *pkt, uint16_t len, uint32_t src_ip);
@@ -22,20 +18,18 @@ void ip_init(void) {
     ip_id_counter = 1;
 }
 
-/* ============================================================
- * Envio de pacote IP
- * ============================================================ */
+
 bool ip_send(uint32_t dst_ip, uint8_t protocol,
              const void *payload, uint16_t plen)
 {
-    /* Monta pacote IP em buffer estático */
+    
     static uint8_t ip_buf[1500];
 
     uint16_t total = (uint16_t)(IP_HDR_LEN + plen);
     if (total > sizeof(ip_buf)) return false;
 
     ip_hdr_t *hdr = (ip_hdr_t *)ip_buf;
-    hdr->ver_ihl    = 0x45;   /* versão 4, IHL = 5 dwords */
+    hdr->ver_ihl    = 0x45;   
     hdr->tos        = 0;
     hdr->total_len  = htons(total);
     hdr->id         = htons(ip_id_counter++);
@@ -49,7 +43,7 @@ bool ip_send(uint32_t dst_ip, uint8_t protocol,
 
     memcpy(ip_buf + IP_HDR_LEN, payload, plen);
 
-    /* Resolver MAC de destino (ou gateway se fora da rede) */
+    
     uint32_t next_hop = dst_ip;
     if ((dst_ip & net_mask) != (net_ip & net_mask))
         next_hop = net_gateway;
@@ -60,9 +54,7 @@ bool ip_send(uint32_t dst_ip, uint8_t protocol,
     return eth_send(dst_mac, ETHERTYPE_IP, ip_buf, total);
 }
 
-/* ============================================================
- * Recepção de pacote IP
- * ============================================================ */
+
 void ip_recv(const void *pkt, uint16_t len) {
     if (len < IP_HDR_LEN) return;
     const ip_hdr_t *hdr = (const ip_hdr_t *)pkt;
@@ -70,7 +62,7 @@ void ip_recv(const void *pkt, uint16_t len) {
     uint8_t ihl = (hdr->ver_ihl & 0x0F) * 4;
     if (ihl < IP_HDR_LEN || ihl > len) return;
 
-    /* Ignorar pacotes não destinados a nós (unicast ou broadcast) */
+    
     if (hdr->dst != net_ip && hdr->dst != IP_BROADCAST) return;
 
     uint32_t src_ip = hdr->src;

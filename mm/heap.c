@@ -1,11 +1,4 @@
-/*
- * mm/heap.c — Kernel Heap com first-fit e coalescing
- *
- * Layout de um bloco:
- *   [heap_block_t header][dados...]
- *
- * Coalescing: ao liberar, une com bloco seguinte e/ou anterior se livres.
- */
+
 
 #include <mm/heap.h>
 #include <mm/pmm.h>
@@ -14,15 +7,15 @@
 #include <types.h>
 
 #define HEAP_MAGIC  0xDEADBEEF
-#define MIN_SPLIT   32   /* Tamanho mínimo para dividir um bloco */
+#define MIN_SPLIT   32   
 
-/* Header de cada bloco no heap */
+
 typedef struct heap_block {
-    uint32_t         magic;   /* Sempre HEAP_MAGIC — detecta corrupção */
-    size_t           size;    /* Tamanho dos dados (sem o header) */
-    bool             free;    /* true = livre */
-    struct heap_block *next;  /* Próximo bloco (ou NULL) */
-    struct heap_block *prev;  /* Bloco anterior (ou NULL) */
+    uint32_t         magic;   
+    size_t           size;    
+    bool             free;    
+    struct heap_block *next;  
+    struct heap_block *prev;  
 } heap_block_t;
 
 static heap_block_t *heap_start = 0;
@@ -30,16 +23,16 @@ static uint32_t     heap_base   = 0;
 static uint32_t     heap_end    = 0;
 static uint32_t     heap_max    = 0;
 
-/* ---- Helpers ---- */
 
-/* Expande o heap alocando mais páginas do PMM */
+
+
 static bool heap_expand(size_t needed) {
     uint32_t pages = (needed + PAGE_SIZE - 1) / PAGE_SIZE;
     uint32_t i;
     for (i = 0; i < pages; i++) {
         uint32_t phys = pmm_alloc_page();
         if (!phys) return false;
-        /* Identity mapping: virt == phys no kernel */
+        
         heap_end += PAGE_SIZE;
     }
     return true;
@@ -48,9 +41,9 @@ static bool heap_expand(size_t needed) {
 void heap_init(uint32_t start, uint32_t size) {
     heap_base = start;
     heap_end  = start + size;
-    heap_max  = start + (64 * 1024 * 1024);  /* Máximo 64 MB de heap */
+    heap_max  = start + (64 * 1024 * 1024);  
 
-    /* Primeiro bloco ocupa todo o espaço disponível */
+    
     heap_start = (heap_block_t *)start;
     heap_start->magic = HEAP_MAGIC;
     heap_start->size  = size - sizeof(heap_block_t);
@@ -62,20 +55,20 @@ void heap_init(uint32_t start, uint32_t size) {
 void *kmalloc(size_t size) {
     if (size == 0) return 0;
 
-    /* Alinha em 8 bytes */
+    
     size = (size + 7) & ~7;
 
     heap_block_t *blk = heap_start;
 
-    /* First-fit */
+    
     while (blk) {
         if (blk->magic != HEAP_MAGIC) {
-            /* Heap corrompido */
+            
             return 0;
         }
 
         if (blk->free && blk->size >= size) {
-            /* Divide o bloco se sobrar espaço suficiente */
+            
             if (blk->size >= size + sizeof(heap_block_t) + MIN_SPLIT) {
                 heap_block_t *new_blk = (heap_block_t *)((uint8_t *)blk
                                         + sizeof(heap_block_t) + size);
@@ -94,7 +87,7 @@ void *kmalloc(size_t size) {
             return (void *)((uint8_t *)blk + sizeof(heap_block_t));
         }
 
-        /* Último bloco e ainda livre: tenta expandir */
+        
         if (!blk->next && blk->free) {
             size_t need = size - blk->size;
             if (heap_end + need <= heap_max) {
@@ -108,7 +101,7 @@ void *kmalloc(size_t size) {
         blk = blk->next;
     }
 
-    /* Nenhum bloco livre: expande o heap com novo bloco */
+    
     size_t total = sizeof(heap_block_t) + size;
     if (heap_end + total <= heap_max && heap_expand(total)) {
         heap_block_t *new_blk = (heap_block_t *)(heap_end - total);
@@ -117,7 +110,7 @@ void *kmalloc(size_t size) {
         new_blk->free  = false;
         new_blk->next  = 0;
 
-        /* Liga ao último bloco existente */
+        
         heap_block_t *last = heap_start;
         while (last->next) last = last->next;
         last->next     = new_blk;
@@ -126,11 +119,11 @@ void *kmalloc(size_t size) {
         return (void *)((uint8_t *)new_blk + sizeof(heap_block_t));
     }
 
-    return 0;  /* Out of memory */
+    return 0;  
 }
 
 void *kmalloc_aligned(size_t size) {
-    /* Aloca size + PAGE_SIZE e alinha a 4 KB */
+    
     void *ptr = kmalloc(size + PAGE_SIZE);
     if (!ptr) return 0;
     uint32_t addr = (uint32_t)ptr;
@@ -143,19 +136,19 @@ void kfree(void *ptr) {
 
     heap_block_t *blk = (heap_block_t *)((uint8_t *)ptr - sizeof(heap_block_t));
 
-    if (blk->magic != HEAP_MAGIC) return;  /* Double-free ou corrupção */
+    if (blk->magic != HEAP_MAGIC) return;  
     if (blk->free) return;
 
     blk->free = true;
 
-    /* Coalescing com o bloco seguinte */
+    
     if (blk->next && blk->next->free) {
         blk->size += sizeof(heap_block_t) + blk->next->size;
         blk->next  = blk->next->next;
         if (blk->next) blk->next->prev = blk;
     }
 
-    /* Coalescing com o bloco anterior */
+    
     if (blk->prev && blk->prev->free) {
         blk->prev->size += sizeof(heap_block_t) + blk->size;
         blk->prev->next  = blk->next;
@@ -173,7 +166,7 @@ void *krealloc(void *ptr, size_t size) {
     void *new_ptr = kmalloc(size);
     if (!new_ptr) return 0;
 
-    /* Copia dados antigos */
+    
     uint8_t *src = (uint8_t *)ptr;
     uint8_t *dst = (uint8_t *)new_ptr;
     size_t copy  = blk->size < size ? blk->size : size;

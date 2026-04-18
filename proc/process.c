@@ -1,6 +1,4 @@
-/*
- * proc/process.c — Criação e gerenciamento de processos
- */
+
 
 #include <proc/process.h>
 #include <mm/heap.h>
@@ -10,7 +8,6 @@
 #include <drivers/vga.h>
 #include <types.h>
 
-/* Tabela de processos */
 static process_t process_table[MAX_PROCESSES];
 static process_t *current_process = 0;
 static uint32_t  next_pid = 0;
@@ -25,13 +22,11 @@ void process_init(void) {
     next_pid = 0;
 }
 
-/* Aloca uma entrada livre na tabela */
 static process_t *alloc_process(void) {
     uint32_t i;
     for (i = 0; i < MAX_PROCESSES; i++) {
-        if (process_table[i].state == PROC_UNUSED) {
+        if (process_table[i].state == PROC_UNUSED)
             return &process_table[i];
-        }
     }
     return 0;
 }
@@ -45,18 +40,16 @@ process_t *process_create_kernel(void) {
     p->state      = PROC_RUNNING;
     p->priority   = 0;
     strcpy(p->name, "kernel");
+    strcpy(p->cwd,  "/");
     p->page_dir   = vmm_get_current_dir();
-
-    /* Inicializa contexto com CR3 e EFLAGS válidos.
-     * ESP e EIP serão salvos na primeira chamada do context_switch. */
-    p->ctx.cr3    = (uint32_t)vmm_get_current_dir();
-    p->ctx.eflags = 0x202;  /* IF=1 */
+    p->ctx.cr3    = (uint64_t)vmm_get_current_dir();
+    p->ctx.rflags = 0x202;
 
     current_process = p;
     return p;
 }
 
-process_t *process_create(const char *name, uint32_t entry, uint32_t priority) {
+process_t *process_create(const char *name, uint64_t entry, uint32_t priority) {
     process_t *p = alloc_process();
     if (!p) return 0;
 
@@ -66,67 +59,75 @@ process_t *process_create(const char *name, uint32_t entry, uint32_t priority) {
     p->priority = priority;
     strncpy(p->name, name, 63);
 
-    /* Aloca kernel stack */
-    uint32_t kstack = pmm_alloc_page();
+    uint64_t kstack = pmm_alloc_page();
     if (!kstack) return 0;
     p->kernel_stack = kstack + KERNEL_STACK_SIZE;
 
-    /* Cria espaço de endereçamento */
     p->page_dir = vmm_create_address_space();
     if (!p->page_dir) {
         pmm_free_page(kstack);
         return 0;
     }
 
-    /*
-     * Configura o contexto inicial:
-     * Quando o scheduler fizer o primeiro switch para este processo,
-     * vai restaurar esses registradores e pular para entry.
-     */
-    p->ctx.eip    = entry;
-    p->ctx.esp    = p->kernel_stack;
-    p->ctx.eflags = 0x202;  /* IF=1 (interrupções habilitadas) */
-    p->ctx.cr3    = (uint32_t)p->page_dir;
+    p->ctx.rip    = entry;
+    p->ctx.rsp    = p->kernel_stack;
+    p->ctx.rflags = 0x202;
+    p->ctx.cr3    = (uint64_t)p->page_dir;
 
+    strcpy(p->cwd, current_process ? current_process->cwd : "/");
     p->parent = current_process;
+
+    /* Register child in parent's list */
+    if (current_process && current_process->nchildren < 8)
+        current_process->children[current_process->nchildren++] = p->pid;
+
     return p;
+}
+
+void process_child_exited(process_t *child) {
+    if (!child || !child->parent) return;
+    process_t *par = child->parent;
+    if (par->waiting_child) {
+        par->wait_result    = child->exit_code;
+        par->waiting_child  = false;
+        par->state          = PROC_READY;
+    }
 }
 
 void process_exit(int32_t code) {
     if (current_process) {
         current_process->state     = PROC_ZOMBIE;
         current_process->exit_code = code;
+        process_child_exited(current_process);
     }
-    /* O scheduler vai limpar e escolher o próximo */
-    __asm__ volatile ("int $0x80" : : "a"(1), "b"(code));
+    __asm__ volatile ("int $0x80" : : "a"((uint64_t)1), "D"((uint64_t)code));
 }
 
-process_t *process_current(void) { return current_process; }
+process_t *process_current(void)          { return current_process; }
+void        process_set_current(process_t *p) { current_process = p; }
 
-process_t *process_create_app(const char *name, uint32_t mem_bytes) {
+process_t *process_create_app(const char *name, uint64_t mem_bytes) {
     process_t *p = alloc_process();
     if (!p) return 0;
 
     memset(p, 0, sizeof(process_t));
     p->pid        = next_pid++;
-    p->state      = PROC_RUNNING;  /* Visível no Task Manager como "Rodando" */
+    p->state      = PROC_RUNNING;
     p->priority   = 1;
     strncpy(p->name, name, 63);
-    p->uid        = 0;             /* root */
+    p->uid        = 0;
     p->page_dir   = vmm_get_current_dir();
-    p->ctx.cr3    = (uint32_t)p->page_dir;
-    p->ctx.eflags = 0x202;
+    p->ctx.cr3    = (uint64_t)p->page_dir;
+    p->ctx.rflags = 0x202;
 
-    /* Aloca bloco de memória representando o working set do app */
-    p->mem_block = kmalloc(mem_bytes);
+    p->mem_block = kmalloc((size_t)mem_bytes);
     p->mem_size  = p->mem_block ? mem_bytes : 0;
 
-    /* NÃO adiciona ao run_queue — é apenas um tracker de recursos */
     return p;
 }
 
 void process_kill(uint32_t pid) {
-    if (pid == 0) return;   /* Nunca matar o kernel */
+    if (pid == 0) return;
     uint32_t i;
     for (i = 0; i < MAX_PROCESSES; i++) {
         if (process_table[i].pid == pid && process_table[i].state != PROC_UNUSED) {
@@ -141,13 +142,20 @@ void process_kill(uint32_t pid) {
     }
 }
 
+void process_iterate(void (*cb)(process_t *p, void *ctx), void *ctx) {
+    uint32_t i;
+    for (i = 0; i < MAX_PROCESSES; i++) {
+        if (process_table[i].state != PROC_UNUSED)
+            cb(&process_table[i], ctx);
+    }
+}
+
 process_t *process_get(uint32_t pid) {
     uint32_t i;
     for (i = 0; i < MAX_PROCESSES; i++) {
         if (process_table[i].state != PROC_UNUSED &&
-            process_table[i].pid == pid) {
+            process_table[i].pid == pid)
             return &process_table[i];
-        }
     }
     return 0;
 }

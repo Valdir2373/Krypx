@@ -100,6 +100,11 @@ int vfs_unlink(vfs_node_t *dir, const char *name) {
     return -1;
 }
 
+int vfs_rename(vfs_node_t *sdir, const char *sname, vfs_node_t *ddir, const char *dname) {
+    (void)sdir; (void)sname; (void)ddir; (void)dname;
+    return -1;
+}
+
 vfs_node_t *vfs_resolve_parent(const char *path, char *name_out) {
     if (!path || path[0] != '/') return 0;
     if (name_out) name_out[0] = 0;

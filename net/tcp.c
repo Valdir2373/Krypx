@@ -1,8 +1,4 @@
-/*
- * net/tcp.c — Transmission Control Protocol (cliente simplificado)
- * Implementa máquina de estados TCP para conexões de saída.
- * Suporta connect, send, recv e close.
- */
+
 
 #include <net/tcp.h>
 #include <net/ip.h>
@@ -20,9 +16,7 @@ void tcp_init(void) {
     next_local_port = 49152;
 }
 
-/* ============================================================
- * Pseudo-header para checksum TCP
- * ============================================================ */
+
 typedef struct {
     uint32_t src;
     uint32_t dst;
@@ -45,9 +39,7 @@ static uint16_t tcp_checksum_calc(uint32_t src_ip, uint32_t dst_ip,
     return net_checksum(buf, (uint32_t)(sizeof(tcp_pseudo_t) + tcp_len));
 }
 
-/* ============================================================
- * Envia segmento TCP
- * ============================================================ */
+
 static void tcp_send_seg(tcp_conn_t *c, uint8_t flags,
                          const void *data, uint16_t dlen)
 {
@@ -68,18 +60,14 @@ static void tcp_send_seg(tcp_conn_t *c, uint8_t flags,
     ip_send(c->remote_ip, IP_PROTO_TCP, buf, total);
 }
 
-/* ============================================================
- * Polling helper: processa um pacote da NIC
- * ============================================================ */
+
 static void tcp_poll_once(void) {
     uint8_t tmp[2048];
     uint16_t rlen = e1000_recv(tmp, sizeof(tmp));
     if (rlen > 0) eth_recv(tmp, rlen);
 }
 
-/* ============================================================
- * API pública
- * ============================================================ */
+
 int tcp_connect(uint32_t dst_ip, uint16_t dst_port) {
     uint32_t i;
     tcp_conn_t *c = NULL;
@@ -165,9 +153,7 @@ void tcp_close(int conn_id) {
     c->state = TCP_CLOSED;
 }
 
-/* ============================================================
- * Recepção de segmentos TCP (chamado por ip_recv via tcp_recv_pkt)
- * ============================================================ */
+
 void tcp_recv_pkt(const void *pkt, uint16_t len, uint32_t src_ip) {
     if (len < TCP_HDR_LEN) return;
     const tcp_hdr_t *hdr = (const tcp_hdr_t *)pkt;

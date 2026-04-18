@@ -62,6 +62,16 @@ char *strrchr(const char *s, int c) {
     return (char *)last;
 }
 
+char *strstr(const char *h, const char *n) {
+    if (!*n) return (char *)h;
+    size_t nlen = strlen(n);
+    while (*h) {
+        if (*h == *n && strncmp(h, n, nlen) == 0) return (char *)h;
+        h++;
+    }
+    return 0;
+}
+
 void *memset(void *dst, int c, size_t n) {
     uint8_t *d = (uint8_t *)dst;
     while (n--) *d++ = (uint8_t)c;

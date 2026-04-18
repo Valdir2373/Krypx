@@ -1,15 +1,10 @@
-/*
- * security/auth.c — Hashing de senha com SHA-256
- * Implementação bare-metal do SHA-256 sem libc.
- */
+
 
 #include <security/auth.h>
 #include <lib/string.h>
 #include <types.h>
 
-/* ============================================================
- * SHA-256 — RFC 6234
- * ============================================================ */
+
 
 static const uint32_t K[64] = {
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,
@@ -78,14 +73,14 @@ void auth_hash_password(const char *password, uint8_t out[32]) {
     uint32_t total = len;
     uint32_t done  = 0;
 
-    /* Process complete 64-byte blocks */
+    
     while (len - done >= 64) {
         for (i = 0; i < 64; i++) buf[i] = (uint8_t)password[done + i];
         sha256_transform(state, buf);
         done += 64;
     }
 
-    /* Final block with padding */
+    
     uint32_t rem = len - done;
     for (i = 0; i < rem; i++) buf[i] = (uint8_t)password[done + i];
     buf[rem] = 0x80;
@@ -107,7 +102,7 @@ void auth_hash_password(const char *password, uint8_t out[32]) {
     buf[63] = (uint8_t)(bit_len);
     sha256_transform(state, buf);
 
-    /* Output: big-endian */
+    
     for (i = 0; i < 8; i++) {
         out[i*4+0] = (uint8_t)(state[i] >> 24);
         out[i*4+1] = (uint8_t)(state[i] >> 16);

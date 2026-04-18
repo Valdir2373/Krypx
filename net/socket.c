@@ -1,7 +1,4 @@
-/*
- * net/socket.c — Implementação de sockets BSD-like
- * Mapeia operações de socket para TCP ou UDP conforme o tipo.
- */
+
 
 #include <net/socket.h>
 #include <net/tcp.h>
@@ -20,8 +17,8 @@ typedef enum {
 
 typedef struct {
     sock_type_internal_t type;
-    int tcp_conn;          /* ID de conexão TCP, -1 se não conectado */
-    uint16_t udp_port;     /* Porta local UDP */
+    int tcp_conn;          
+    uint16_t udp_port;     
     bool used;
 } sock_entry_t;
 

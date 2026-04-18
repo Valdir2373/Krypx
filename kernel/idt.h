@@ -1,73 +1,62 @@
-/*
- * kernel/idt.h — Interrupt Descriptor Table (IDT) do Krypx
- * 256 entradas cobrindo exceções (0-31), IRQs (32-47) e syscall (0x80)
- */
+
 #ifndef _IDT_H
 #define _IDT_H
 
 #include <types.h>
 
-/* Número de entradas na IDT */
 #define IDT_ENTRIES 256
 
-/* Vetores de interrupção */
-#define IRQ_BASE      32    /* IRQs do PIC começam no vetor 32 */
-#define IRQ_TIMER     32    /* IRQ0 — PIT timer */
-#define IRQ_KEYBOARD  33    /* IRQ1 — Teclado PS/2 */
-#define IRQ_CASCADE   34    /* IRQ2 — Cascata PIC secundário */
-#define IRQ_COM2      35    /* IRQ3 — Serial COM2 */
-#define IRQ_COM1      36    /* IRQ4 — Serial COM1 */
-#define IRQ_MOUSE     44    /* IRQ12 — Mouse PS/2 */
-#define IRQ_NETWORK   43    /* IRQ11 — Rede e1000 */
-#define IRQ_SYSCALL   0x80  /* Syscall (int 0x80) */
+/* IRQ vectors after PIC remapping to 0x20-0x2F */
+#define IRQ_BASE      32
+#define IRQ_TIMER     32
+#define IRQ_KEYBOARD  33
+#define IRQ_CASCADE   34
+#define IRQ_COM2      35
+#define IRQ_COM1      36
+#define IRQ_MOUSE     44
+#define IRQ_NETWORK   43
+#define IRQ_SYSCALL   0x80
 
-/* Uma entrada da IDT (8 bytes) */
+/* 64-bit IDT gate descriptor (16 bytes) */
 typedef struct {
-    uint16_t offset_low;   /* Bits [15:0] do endereço do handler */
-    uint16_t selector;     /* Seletor de código (GDT_KERNEL_CODE = 0x08) */
-    uint8_t  zero;         /* Sempre 0 */
-    uint8_t  type_attr;    /* Tipo e atributos: P DPL 0 tipo */
-    uint16_t offset_high;  /* Bits [31:16] do endereço do handler */
+    uint16_t offset_low;    /* handler address bits [15:0]  */
+    uint16_t selector;      /* code segment selector (0x08) */
+    uint8_t  ist;           /* IST index (0 = use RSP0 from TSS) */
+    uint8_t  type_attr;     /* 0x8E = kernel interrupt gate */
+    uint16_t offset_mid;    /* handler address bits [31:16] */
+    uint32_t offset_high;   /* handler address bits [63:32] */
+    uint32_t reserved;      /* must be 0 */
 } __attribute__((packed)) idt_entry_t;
 
-/* Ponteiro para a IDT (carregado via lidt) */
+/* 64-bit IDTR (10 bytes: 2-byte limit + 8-byte base) */
 typedef struct {
-    uint16_t limit;   /* Tamanho da IDT - 1 */
-    uint32_t base;    /* Endereço linear da IDT */
+    uint16_t limit;
+    uint64_t base;
 } __attribute__((packed)) idt_ptr_t;
 
-/* Registradores salvos pelo wrapper ASM ao entrar no handler */
+/* Register frame saved by isr_common on the kernel stack.
+ * Layout (low address first = first struct member):
+ *   r15, r14, r13, r12, r11, r10, r9, r8,
+ *   rbp, rdi, rsi, rdx, rcx, rbx, rax,
+ *   int_no, err_code,
+ *   rip, cs, rflags, rsp, ss   (pushed by CPU)
+ */
 typedef struct {
-    /* Segmentos */
-    uint32_t ds;
-    /* Registradores gerais (pushal) */
-    uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax;
-    /* Número da interrupção e código de erro */
-    uint32_t int_no, err_code;
-    /* Empurrados automaticamente pelo CPU */
-    uint32_t eip, cs, eflags, useresp, ss;
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t int_no, err_code;
+    uint64_t rip, cs, rflags, rsp, ss;
 } registers_t;
 
-/* Tipo de handler de interrupção em C */
 typedef void (*interrupt_handler_t)(registers_t *regs);
 
-/* Inicializa e carrega a IDT */
 void idt_init(void);
-
-/* Registra um handler C para um vetor de interrupção */
 void idt_register_handler(uint8_t vector, interrupt_handler_t handler);
-
-/* Remapeia o PIC 8259 (IRQ 0-15 → vetores 32-47) */
 void pic_remap(void);
-
-/* Envia EOI (End of Interrupt) ao PIC */
 void pic_send_eoi(uint8_t irq);
-
-/* Mascara/desmascara um IRQ no PIC */
 void pic_mask_irq(uint8_t irq);
 void pic_unmask_irq(uint8_t irq);
-
-/* Handler principal de interrupções (chamado pelo ASM wrapper) */
 void interrupt_handler(registers_t *regs);
 
-#endif /* _IDT_H */
+#endif
+

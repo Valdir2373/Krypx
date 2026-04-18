@@ -1,74 +1,66 @@
-; boot/isr.asm — Wrappers ASM para todos os handlers de interrupção
-; Cada ISR salva o estado completo da CPU, chama o handler C e restaura.
+; isr.asm — 64-bit interrupt service routine stubs
+; Saves all general-purpose registers, calls interrupt_handler(registers_t*),
+; then restores and returns with IRETQ.
 ;
-; Para exceções SEM código de erro: empurramos 0 como erro fictício.
-; Para exceções COM código de erro: a CPU já empurra o código.
-; Em seguida empurramos o número da interrupção e chamamos interrupt_handler().
+; registers_t layout (matches struct in kernel/idt.h):
+;   r15, r14, r13, r12, r11, r10, r9, r8,
+;   rbp, rdi, rsi, rdx, rcx, rbx, rax,
+;   int_no, err_code,
+;   rip, cs, rflags, rsp, ss   (pushed by CPU)
 
-bits 32
+bits 64
 
-extern interrupt_handler    ; Handler C em kernel/idt.c
+extern interrupt_handler
 
-; ============================================================
-; Macro para ISR SEM código de erro (push 0 + número)
-; ============================================================
+; ── Exception: no error code pushed by CPU ───────────────────────────────────
 %macro ISR_NOERRCODE 1
 global isr%1
 isr%1:
-    cli
-    push dword 0        ; Código de erro fictício
-    push dword %1       ; Número da interrupção
-    jmp isr_common
+    push    qword 0        ; fake error code
+    push    qword %1       ; interrupt number
+    jmp     isr_common
 %endmacro
 
-; ============================================================
-; Macro para ISR COM código de erro (CPU já empurrou o código)
-; ============================================================
+; ── Exception: CPU pushes error code before we get control ───────────────────
 %macro ISR_ERRCODE 1
 global isr%1
 isr%1:
-    cli
-    push dword %1       ; Número da interrupção
-    jmp isr_common
+    push    qword %1       ; interrupt number (error code already on stack)
+    jmp     isr_common
 %endmacro
 
-; ============================================================
-; Macro para IRQ (remapeados para vetores 32+)
-; ============================================================
+; ── Hardware IRQ ──────────────────────────────────────────────────────────────
 %macro IRQ 2
 global irq%1
 irq%1:
-    cli
-    push dword 0        ; Sem código de erro
-    push dword %2       ; Número do vetor (32 + IRQ)
-    jmp isr_common
+    push    qword 0
+    push    qword %2
+    jmp     isr_common
 %endmacro
 
-; ============================================================
-; Exceções da CPU (0-31)
-; ============================================================
-ISR_NOERRCODE  0    ; Division by Zero
-ISR_NOERRCODE  1    ; Debug
-ISR_NOERRCODE  2    ; Non-Maskable Interrupt
-ISR_NOERRCODE  3    ; Breakpoint
-ISR_NOERRCODE  4    ; Overflow
-ISR_NOERRCODE  5    ; Bound Range Exceeded
-ISR_NOERRCODE  6    ; Invalid Opcode
-ISR_NOERRCODE  7    ; Device Not Available (FPU)
-ISR_ERRCODE    8    ; Double Fault (tem código de erro = 0)
-ISR_NOERRCODE  9    ; Coprocessor Segment Overrun
-ISR_ERRCODE   10    ; Invalid TSS
-ISR_ERRCODE   11    ; Segment Not Present
-ISR_ERRCODE   12    ; Stack-Segment Fault
-ISR_ERRCODE   13    ; General Protection Fault
-ISR_ERRCODE   14    ; Page Fault
-ISR_NOERRCODE 15    ; Reserved
-ISR_NOERRCODE 16    ; x87 FPU Error
-ISR_ERRCODE   17    ; Alignment Check
-ISR_NOERRCODE 18    ; Machine Check
-ISR_NOERRCODE 19    ; SIMD FP Exception
-ISR_NOERRCODE 20    ; Virtualization Exception
-ISR_NOERRCODE 21    ; Reserved
+; ── CPU exceptions ───────────────────────────────────────────────────────────
+ISR_NOERRCODE  0    ; #DE  Divide Error
+ISR_NOERRCODE  1    ; #DB  Debug
+ISR_NOERRCODE  2    ;      NMI
+ISR_NOERRCODE  3    ; #BP  Breakpoint
+ISR_NOERRCODE  4    ; #OF  Overflow
+ISR_NOERRCODE  5    ; #BR  Bound Range Exceeded
+ISR_NOERRCODE  6    ; #UD  Invalid Opcode
+ISR_NOERRCODE  7    ; #NM  Device Not Available
+ISR_ERRCODE    8    ; #DF  Double Fault
+ISR_NOERRCODE  9    ;      Coprocessor Segment Overrun
+ISR_ERRCODE   10    ; #TS  Invalid TSS
+ISR_ERRCODE   11    ; #NP  Segment Not Present
+ISR_ERRCODE   12    ; #SS  Stack-Segment Fault
+ISR_ERRCODE   13    ; #GP  General Protection Fault
+ISR_ERRCODE   14    ; #PF  Page Fault
+ISR_NOERRCODE 15
+ISR_NOERRCODE 16    ; #MF  x87 Floating-Point
+ISR_ERRCODE   17    ; #AC  Alignment Check
+ISR_NOERRCODE 18    ; #MC  Machine Check
+ISR_NOERRCODE 19    ; #XM  SIMD Floating-Point
+ISR_NOERRCODE 20    ; #VE  Virtualization
+ISR_NOERRCODE 21
 ISR_NOERRCODE 22
 ISR_NOERRCODE 23
 ISR_NOERRCODE 24
@@ -77,71 +69,86 @@ ISR_NOERRCODE 26
 ISR_NOERRCODE 27
 ISR_NOERRCODE 28
 ISR_NOERRCODE 29
-ISR_ERRCODE   30    ; Security Exception
+ISR_ERRCODE   30    ; #SX  Security Exception
 ISR_NOERRCODE 31
 
-; ============================================================
-; IRQs (0-15, mapeados para vetores 32-47)
-; ============================================================
-IRQ  0, 32    ; PIT Timer
-IRQ  1, 33    ; Keyboard
-IRQ  2, 34    ; Cascade (PIC secundário)
-IRQ  3, 35    ; COM2
-IRQ  4, 36    ; COM1
-IRQ  5, 37    ; LPT2
-IRQ  6, 38    ; Floppy
-IRQ  7, 39    ; LPT1
-IRQ  8, 40    ; RTC
-IRQ  9, 41    ; Free
-IRQ 10, 42    ; Free
-IRQ 11, 43    ; Network (e1000)
-IRQ 12, 44    ; Mouse PS/2
-IRQ 13, 45    ; FPU
-IRQ 14, 46    ; IDE Primary
-IRQ 15, 47    ; IDE Secondary
+; ── Hardware IRQs (remapped to vectors 32–47) ─────────────────────────────────
+IRQ  0, 32    ; PIT timer
+IRQ  1, 33    ; PS/2 keyboard
+IRQ  2, 34
+IRQ  3, 35
+IRQ  4, 36
+IRQ  5, 37
+IRQ  6, 38
+IRQ  7, 39
+IRQ  8, 40
+IRQ  9, 41
+IRQ 10, 42
+IRQ 11, 43    ; network (e1000)
+IRQ 12, 44    ; PS/2 mouse
+IRQ 13, 45
+IRQ 14, 46
+IRQ 15, 47
 
-; ============================================================
-; Syscall (int 0x80)
-; ============================================================
+; ── int $0x80 — 32-bit Linux compat syscall ───────────────────────────────────
 global isr128
 isr128:
-    push dword 0
-    push dword 128
-    jmp isr_common
+    push    qword 0
+    push    qword 128
+    jmp     isr_common
 
-; ============================================================
-; Handler comum: salva estado, chama C, restaura
-; ============================================================
+; ── Common handler ────────────────────────────────────────────────────────────
+; Stack layout when we arrive here (low address first / rsp = lowest):
+;   [rsp+ 0]  int_no     (pushed by stub above)
+;   [rsp+ 8]  err_code   (pushed by stub or CPU)
+;   [rsp+16]  rip        (pushed by CPU)
+;   [rsp+24]  cs         (pushed by CPU)
+;   [rsp+32]  rflags     (pushed by CPU)
+;   [rsp+40]  rsp_user   (pushed by CPU only on ring change)
+;   [rsp+48]  ss         (pushed by CPU only on ring change)
+
 isr_common:
-    ; Salva registradores gerais (edi, esi, ebp, esp, ebx, edx, ecx, eax)
-    pusha
+    ; Save all general-purpose registers (manual, since PUSHA is invalid in 64-bit)
+    push    rax
+    push    rbx
+    push    rcx
+    push    rdx
+    push    rsi
+    push    rdi
+    push    rbp
+    push    r8
+    push    r9
+    push    r10
+    push    r11
+    push    r12
+    push    r13
+    push    r14
+    push    r15
 
-    ; Salva DS e carrega o seletor de dados do kernel
-    mov ax, ds
-    push eax
-    mov ax, 0x10        ; GDT_KERNEL_DATA
-    mov ds, ax
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
+    ; rsp now points to registers_t (r15 at lowest address)
+    ; Pass pointer as first argument (SysV AMD64: rdi)
+    mov     rdi, rsp
+    call    interrupt_handler
 
-    ; Chama o handler C: void interrupt_handler(registers_t *regs)
-    push esp            ; Ponteiro para os registradores salvos na stack
-    call interrupt_handler
-    add esp, 4          ; Limpa o argumento
+    ; Restore general-purpose registers
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     r11
+    pop     r10
+    pop     r9
+    pop     r8
+    pop     rbp
+    pop     rdi
+    pop     rsi
+    pop     rdx
+    pop     rcx
+    pop     rbx
+    pop     rax
 
-    ; Restaura DS
-    pop eax
-    mov ds, ax
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
+    ; Discard int_no and err_code
+    add     rsp, 16
 
-    ; Restaura registradores gerais
-    popa
-
-    ; Remove int_no e err_code que empurramos
-    add esp, 8
-
-    ; Retorna da interrupção (restaura EIP, CS, EFLAGS)
-    iret
+    ; Return from interrupt (64-bit IRET)
+    iretq

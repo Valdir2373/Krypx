@@ -112,5 +112,6 @@ vfs_node_t *vfs_resolve_parent(const char *path, char *name_out);
 int vfs_create(vfs_node_t *dir, const char *name, uint32_t perms);
 int vfs_mkdir(vfs_node_t *dir, const char *name, uint32_t perms);
 int vfs_unlink(vfs_node_t *dir, const char *name);
+int vfs_rename(vfs_node_t *sdir, const char *sname, vfs_node_t *ddir, const char *dname);
 
 #endif 

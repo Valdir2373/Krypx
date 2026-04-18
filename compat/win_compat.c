@@ -1,17 +1,10 @@
-/*
- * compat/win_compat.c — Stub de compatibilidade Windows PE
- *
- * O Krypx detecta binários .exe e informa ao usuário que o ambiente
- * Windows está em desenvolvimento. A arquitetura é idêntica ao ambiente
- * Linux: um processo isolado com syscalls traduzidas — só falta implementar
- * o PE loader e as chamadas Win32 (CreateFile, HeapAlloc, etc.).
- */
+
 
 #include "win_compat.h"
 #include <drivers/vga.h>
 
 void win_compat_init(void) {
-    /* Reservado para futura inicialização do ambiente Win32 */
+    
 }
 
 bool win_compat_load(const uint8_t *data, size_t size) {

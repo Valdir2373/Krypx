@@ -1,6 +1,4 @@
-/*
- * net/tcp.h — Transmission Control Protocol
- */
+
 #ifndef _TCP_H
 #define _TCP_H
 
@@ -8,7 +6,7 @@
 
 #define TCP_HDR_LEN 20
 
-/* Flags TCP */
+
 #define TCP_FIN  0x01
 #define TCP_SYN  0x02
 #define TCP_RST  0x04
@@ -21,14 +19,14 @@ typedef struct {
     uint16_t dst_port;
     uint32_t seq_num;
     uint32_t ack_num;
-    uint8_t  data_offset;  /* bits 7-4: offset em dwords, bits 3-0: reservado */
+    uint8_t  data_offset;  
     uint8_t  flags;
     uint16_t window;
     uint16_t checksum;
     uint16_t urgent;
 } __attribute__((packed)) tcp_hdr_t;
 
-/* Estados da máquina de estados TCP */
+
 typedef enum {
     TCP_CLOSED = 0,
     TCP_SYN_SENT,
@@ -51,29 +49,29 @@ typedef struct tcp_conn {
     uint32_t    remote_ip;
     uint16_t    remote_port;
     uint16_t    local_port;
-    uint32_t    seq;           /* próximo seq a enviar */
-    uint32_t    ack;           /* próximo seq esperado do remoto */
+    uint32_t    seq;           
+    uint32_t    ack;           
     uint8_t     recv_buf[TCP_RECV_BUF_SZ];
     uint16_t    recv_head;
     uint16_t    recv_tail;
     uint16_t    recv_len;
 } tcp_conn_t;
 
-/* Abre conexão TCP (3-way handshake bloqueante) */
+
 int tcp_connect(uint32_t dst_ip, uint16_t dst_port);
 
-/* Envia dados por uma conexão estabelecida */
+
 int tcp_send(int conn_id, const void *data, uint16_t len);
 
-/* Recebe dados (bloqueante com timeout) */
+
 int tcp_recv(int conn_id, void *buf, uint16_t max_len);
 
-/* Fecha a conexão */
+
 void tcp_close(int conn_id);
 
-/* Handler chamado por ip_recv */
+
 void tcp_recv_pkt(const void *pkt, uint16_t len, uint32_t src_ip);
 
 void tcp_init(void);
 
-#endif /* _TCP_H */
+#endif 

@@ -1,8 +1,4 @@
-/*
- * net/netif.c — Interface de rede abstrata
- * Ponto de entrada para inicializar toda a pilha TCP/IP.
- * Inicializa: PCI → e1000 → Ethernet → ARP → IP → ICMP → UDP → TCP → DHCP → DNS
- */
+
 
 #include <net/netif.h>
 #include <net/net.h>
@@ -23,7 +19,7 @@
 
 static bool net_up = false;
 
-/* Debug serial inline */
+
 static void net_ser_putc(char c) { while (!(inb(0x3FD)&0x20)); outb(0x3F8,c); }
 static void net_ser_puts(const char *s) { while (*s) net_ser_putc(*s++); }
 

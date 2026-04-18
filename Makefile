@@ -37,6 +37,7 @@ C_SOURCES   := compat/detect.c \
                compat/linux_compat64.c \
                compat/win_compat.c \
                proc/elf.c \
+               proc/dynlink.c \
                kernel/kernel.c \
                kernel/gdt.c \
                kernel/idt.c \
@@ -86,6 +87,7 @@ C_SOURCES   := compat/detect.c \
                apps/file_manager.c \
                apps/text_editor.c \
                apps/image_viewer.c \
+               apps/kpkg.c \
                lib/png.c \
                lib/jpeg.c \
                lib/sha1.c \
@@ -197,12 +199,37 @@ test-linux-binary:
 	strip tools/test_linux
 	@echo "[OK]  tools/test_linux gerado ($$(stat -c%s tools/test_linux) bytes)"
 
-# Cria disk.img FAT32
+# Cria disk.img FAT32 (2 GB para comportar Firefox + deps)
 disk.img:
-	@echo "[DISK] Criando disk.img (64 MB, FAT32)..."
-	dd if=/dev/zero of=disk.img bs=1M count=64 status=none
+	@echo "[DISK] Criando disk.img (2 GB, FAT32)..."
+	dd if=/dev/zero of=disk.img bs=1M count=2048 status=none
 	mkdosfs -F32 disk.img
-	@echo "[OK]  disk.img criado"
+	@echo "[OK]  disk.img criado (2 GB)"
+
+# ============================================================
+# Firefox — download e instala no disk.img via Alpine Linux
+# ============================================================
+# Pré-requisitos no host: curl mtools bash
+# Uso: make install-firefox   (precisa de disk.img criado)
+
+FIREFOX_SCRIPT := scripts/install_firefox.sh
+
+install-firefox: disk.img
+	@echo "[FIREFOX] Instalando Firefox + dependencias..."
+	@bash $(FIREFOX_SCRIPT) disk.img
+	@echo "[FIREFOX] Pronto! Execute 'make run' e digite 'firefox' no terminal."
+
+# Roda com disco + rede (para Firefox)
+run-firefox: iso disk.img
+	$(QEMU) -cdrom Krypx.iso -m 1024M \
+	    -vga std \
+	    -boot d \
+	    -serial stdio \
+	    -netdev user,id=net0 -device e1000,netdev=net0 \
+	    -drive file=disk.img,format=raw,if=ide \
+	    -no-reboot \
+	    -no-shutdown \
+	    $(KVM_FLAG)
 
 install-test: test-linux-binary disk.img
 	@echo "[DISK] Instalando test_linux no disco (via mtools)..."

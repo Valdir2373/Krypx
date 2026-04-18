@@ -1,7 +1,4 @@
-/*
- * apps/task_manager.c — Gerenciador de tarefas
- * Lista processos, uso de memória e CPU.
- */
+
 
 #include <apps/task_manager.h>
 #include <gui/window.h>
@@ -13,7 +10,7 @@
 #include <lib/string.h>
 #include <types.h>
 
-/* Converte bytes para string "NNK" */
+
 static void mem_to_str(uint32_t bytes, char *out) {
     uint32_t kb = bytes / 1024;
     if (kb == 0) { out[0]='<'; out[1]='1'; out[2]='K'; out[3]='\0'; return; }
@@ -55,7 +52,7 @@ static void tm_on_paint(window_t *win) {
 
     canvas_fill_rect(bx, by, w, win->content_h, 0x001A2433);
 
-    /* Cabeçalho da tabela */
+    
     canvas_fill_rect(bx, by, w, CHAR_HEIGHT + 8, 0x00263545);
     int hx = bx + 4, hy = by + 4;
     canvas_draw_string(hx,      hy, "PID",    0x0074B9FF, COLOR_TRANSPARENT);
@@ -65,7 +62,7 @@ static void tm_on_paint(window_t *win) {
     canvas_draw_string(hx+320,  hy, "UID",    0x0074B9FF, COLOR_TRANSPARENT);
     canvas_draw_string(hx+360,  hy, "RAM",    0x0074B9FF, COLOR_TRANSPARENT);
 
-    /* Linhas de processos */
+    
     int y = by + CHAR_HEIGHT + 12;
     uint32_t row = 0;
     uint32_t pid;
@@ -100,7 +97,7 @@ static void tm_on_paint(window_t *win) {
                            0x00636E72, COLOR_TRANSPARENT);
     }
 
-    /* Barra inferior: estatísticas */
+    
     int sy = by + win->content_h - 50;
     canvas_fill_rect(bx, sy, w, 50, 0x00263545);
     canvas_draw_line(bx, sy, bx+w, sy, 0x00636E72);

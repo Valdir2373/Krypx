@@ -1,7 +1,4 @@
-/*
- * drivers/framebuffer.c — Driver Framebuffer com double buffering
- * Inicializado com dados do GRUB Multiboot (modo gráfico VBE).
- */
+
 
 #include <drivers/framebuffer.h>
 #include <mm/pmm.h>
@@ -11,17 +8,14 @@
 
 framebuffer_t fb;
 
-/* Backbuffer estático de 1280x768x4 bytes = ~3.75 MB
- * Alocado em BSS para não inflar o binário.
- * Suporte a resoluções até 1280x1024.
- */
+
 #define FB_MAX_WIDTH  1280
 #define FB_MAX_HEIGHT 1024
 static uint32_t backbuffer_storage[FB_MAX_WIDTH * FB_MAX_HEIGHT];
 
 bool fb_init(multiboot_info_t *mbi) {
     if (!(mbi->flags & MULTIBOOT_INFO_FRAMEBUFFER)) return false;
-    if (mbi->framebuffer_type != 1) return false;  /* Não é RGB direto */
+    if (mbi->framebuffer_type != 1) return false;  
     if (mbi->framebuffer_bpp != 32 && mbi->framebuffer_bpp != 24) return false;
 
     fb.vram    = (uint32_t *)(uint32_t)mbi->framebuffer_addr;
@@ -31,14 +25,14 @@ bool fb_init(multiboot_info_t *mbi) {
     fb.bpp     = mbi->framebuffer_bpp;
     fb.ready   = true;
 
-    /* Usa backbuffer estático (capaz de até 1280x1024) */
+    
     if (fb.width <= FB_MAX_WIDTH && fb.height <= FB_MAX_HEIGHT) {
         fb.backbuf = backbuffer_storage;
     } else {
         fb.backbuf = fb.vram;
     }
 
-    /* Mapeia a VRAM (pode estar em endereço alto de MMIO PCI) */
+    
     uint32_t fb_phys = (uint32_t)mbi->framebuffer_addr;
     uint32_t fb_size = fb.pitch * fb.height;
 
@@ -46,9 +40,9 @@ bool fb_init(multiboot_info_t *mbi) {
                                    uint32_t size, uint32_t flags);
     extern uint32_t *vmm_get_current_dir(void);
     vmm_map_range(vmm_get_current_dir(), fb_phys, fb_phys, fb_size,
-                  0x03 /* PRESENT | WRITABLE */);
+                  0x03 );
 
-    fb_clear(0x000C2461);  /* Desktop background */
+    fb_clear(0x000C2461);  
     return true;
 }
 
@@ -70,10 +64,10 @@ void fb_fill_rect(int x, int y, int w, int h, uint32_t color) {
 }
 
 void fb_draw_rect(int x, int y, int w, int h, uint32_t color) {
-    fb_fill_rect(x,       y,       w, 1, color);  /* Topo */
-    fb_fill_rect(x,       y+h-1,   w, 1, color);  /* Fundo */
-    fb_fill_rect(x,       y,       1, h, color);  /* Esquerda */
-    fb_fill_rect(x+w-1,   y,       1, h, color);  /* Direita */
+    fb_fill_rect(x,       y,       w, 1, color);  
+    fb_fill_rect(x,       y+h-1,   w, 1, color);  
+    fb_fill_rect(x,       y,       1, h, color);  
+    fb_fill_rect(x+w-1,   y,       1, h, color);  
 }
 
 void fb_blit(int x, int y, int w, int h, const uint32_t *src) {
@@ -100,7 +94,7 @@ void fb_clear(uint32_t color) {
 }
 
 void fb_swap(void) {
-    if (fb.backbuf == fb.vram) return;  /* Sem double buffering */
+    if (fb.backbuf == fb.vram) return;  
     uint32_t bytes = fb.pitch * fb.height;
     memcpy(fb.vram, fb.backbuf, bytes);
 }

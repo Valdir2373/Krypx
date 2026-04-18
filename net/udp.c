@@ -1,8 +1,4 @@
-/*
- * net/udp.c — User Datagram Protocol
- * Encapsula dados em segmentos UDP e os passa para a camada IP.
- * Permite registrar callbacks para portas específicas (ex: DHCP porta 68).
- */
+
 
 #include <net/udp.h>
 #include <net/ip.h>
@@ -47,7 +43,7 @@ bool udp_send(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
     hdr->src_port = htons(src_port);
     hdr->dst_port = htons(dst_port);
     hdr->length   = htons(total);
-    hdr->checksum = 0;   /* Checksum opcional para IPv4 UDP */
+    hdr->checksum = 0;   
 
     memcpy(buf + UDP_HDR_LEN, data, len);
     return ip_send(dst_ip, IP_PROTO_UDP, buf, total);

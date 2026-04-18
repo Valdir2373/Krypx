@@ -1,40 +1,35 @@
-/*
- * drivers/vga.c — Driver VGA modo texto 80x25
- * Escreve diretamente no buffer de vídeo mapeado em 0xB8000.
- * Cada célula é 2 bytes: [atributo][caractere ASCII]
- * Atributo: bits [7:4] = cor de fundo, bits [3:0] = cor do texto
- */
+
 
 #include <drivers/vga.h>
 #include <types.h>
 #include <io.h>
 
-/* Endereço físico do buffer de vídeo VGA modo texto */
+
 #define VGA_BUFFER_ADDR  0xB8000
 
-/* Portas do controlador CRT (cursor de hardware) */
+
 #define VGA_CTRL_PORT    0x3D4
 #define VGA_DATA_PORT    0x3D5
 #define VGA_CURSOR_HI    0x0E
 #define VGA_CURSOR_LO    0x0F
 
-/* Estado interno do terminal */
+
 static uint16_t *vga_buf = (uint16_t *)VGA_BUFFER_ADDR;
 static uint8_t  vga_col  = 0;
 static uint8_t  vga_row  = 0;
-static uint8_t  vga_attr = 0;  /* atributo atual (cor) */
+static uint8_t  vga_attr = 0;  
 
-/* Monta um entry de 16 bits: [atributo | char] */
+
 static inline uint16_t vga_entry(char c, uint8_t attr) {
     return (uint16_t)c | ((uint16_t)attr << 8);
 }
 
-/* Monta atributo a partir de fg e bg */
+
 static inline uint8_t vga_make_attr(vga_color_t fg, vga_color_t bg) {
     return (uint8_t)((bg << 4) | (fg & 0x0F));
 }
 
-/* Atualiza cursor de hardware via porta CRT */
+
 static void vga_update_hw_cursor(void) {
     uint16_t pos = vga_row * VGA_WIDTH + vga_col;
     outb(VGA_CTRL_PORT, VGA_CURSOR_HI);
@@ -43,14 +38,14 @@ static void vga_update_hw_cursor(void) {
     outb(VGA_DATA_PORT, (uint8_t)(pos & 0xFF));
 }
 
-/* Rola o conteúdo da tela uma linha para cima */
+
 static void vga_scroll(void) {
     uint32_t i;
-    /* Move linhas 1..24 para cima */
+    
     for (i = 0; i < (VGA_HEIGHT - 1) * VGA_WIDTH; i++) {
         vga_buf[i] = vga_buf[i + VGA_WIDTH];
     }
-    /* Limpa a última linha */
+    
     for (i = (VGA_HEIGHT - 1) * VGA_WIDTH; i < VGA_HEIGHT * VGA_WIDTH; i++) {
         vga_buf[i] = vga_entry(' ', vga_attr);
     }
@@ -92,11 +87,11 @@ void vga_putchar(char c) {
     } else if (c == '\r') {
         vga_col = 0;
     } else if (c == '\t') {
-        /* Tab alinha em múltiplos de 4 */
+        
         vga_col = (vga_col + 4) & ~3;
         if (vga_col >= VGA_WIDTH) vga_newline();
     } else if (c == '\b') {
-        /* Backspace */
+        
         if (vga_col > 0) {
             vga_col--;
             vga_buf[vga_row * VGA_WIDTH + vga_col] = vga_entry(' ', vga_attr);

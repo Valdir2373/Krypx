@@ -1,8 +1,4 @@
-/*
- * net/ethernet.c — Frame Ethernet II
- * Encapsula payloads (ARP, IP) em frames Ethernet e os envia via e1000.
- * Recebe frames do driver e despacha para ARP ou IP conforme ethertype.
- */
+
 
 #include <net/ethernet.h>
 #include <net/arp.h>
@@ -12,11 +8,11 @@
 #include <lib/string.h>
 #include <types.h>
 
-/* Buffer estático para montagem do frame */
+
 static uint8_t eth_tx_buf[ETH_MAX_FRAME];
 
 void eth_init(void) {
-    /* Registra callback de recepção no driver e1000 */
+    
     e1000_set_recv_callback(eth_recv);
 }
 

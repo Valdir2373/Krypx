@@ -1,46 +1,39 @@
-/*
- * mm/vmm.h — Virtual Memory Manager (VMM)
- * Paginação x86: Page Directory (1024 entries) + Page Tables (1024 entries).
- */
+
 #ifndef _VMM_H
 #define _VMM_H
 
 #include <types.h>
 
-/* Flags de página */
-#define PAGE_PRESENT   (1 << 0)
-#define PAGE_WRITABLE  (1 << 1)
-#define PAGE_USER      (1 << 2)
-#define PAGE_NOCACHE   (1 << 4)
-#define PAGE_4MB       (1 << 7)   /* PSE: 4 MB page */
+/* Page table entry flags */
+#define PAGE_PRESENT   (1ULL << 0)
+#define PAGE_WRITABLE  (1ULL << 1)
+#define PAGE_USER      (1ULL << 2)
+#define PAGE_NOCACHE   (1ULL << 4)
+#define PAGE_2MB       (1ULL << 7)   /* 2MB page in PD level */
+#define PAGE_4MB       PAGE_2MB      /* alias for old code */
+#define PAGE_NX        (1ULL << 63)
 
-/* Page Directory e Page Table são apenas arrays de uint32_t[1024] */
-typedef uint32_t page_dir_t;    /* Ponteiro para array de 1024 uint32_t */
-typedef uint32_t page_table_t;  /* Ponteiro para array de 1024 uint32_t */
+#define PAGE_SIZE      4096ULL
 
-/* Inicializa paginação com identity map do kernel */
-void vmm_init(void);
+/* Virtual address decomposition for 4-level paging */
+#define PML4_INDEX(va)  (((uint64_t)(va) >> 39) & 0x1FFULL)
+#define PDPT_INDEX(va)  (((uint64_t)(va) >> 30) & 0x1FFULL)
+#define PD_INDEX(va)    (((uint64_t)(va) >> 21) & 0x1FFULL)
+#define PT_INDEX(va)    (((uint64_t)(va) >> 12) & 0x1FFULL)
 
-/* Mapeia virtual→físico com flags */
-void vmm_map_page(page_dir_t *dir, uint32_t virt, uint32_t phys, uint32_t flags);
+typedef uint64_t pml4e_t;
+/* Alias for old code that uses page_dir_t */
+typedef uint64_t page_dir_t;
 
-/* Remove mapeamento */
-void vmm_unmap_page(page_dir_t *dir, uint32_t virt);
+void      vmm_init(void);
+void      vmm_map_page(pml4e_t *pml4, uint64_t virt, uint64_t phys, uint64_t flags);
+void      vmm_unmap_page(pml4e_t *pml4, uint64_t virt);
+uint64_t  vmm_get_physical(pml4e_t *pml4, uint64_t virt);
+void      vmm_map_range(pml4e_t *pml4, uint64_t virt, uint64_t phys,
+                        uint64_t size, uint64_t flags);
+pml4e_t  *vmm_create_address_space(void);
+void      vmm_switch_address_space(pml4e_t *pml4);
+pml4e_t  *vmm_get_current_dir(void);
 
-/* Traduz virtual→físico (0 se não mapeado) */
-uint32_t vmm_get_physical(page_dir_t *dir, uint32_t virt);
+#endif
 
-/* Cria novo espaço de endereçamento */
-page_dir_t *vmm_create_address_space(void);
-
-/* Troca CR3 */
-void vmm_switch_address_space(page_dir_t *dir);
-
-/* Retorna diretório atual */
-page_dir_t *vmm_get_current_dir(void);
-
-/* Mapeia range físico em virtual */
-void vmm_map_range(page_dir_t *dir, uint32_t virt, uint32_t phys,
-                   uint32_t size, uint32_t flags);
-
-#endif /* _VMM_H */

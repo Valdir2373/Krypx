@@ -1,7 +1,4 @@
-/*
- * apps/about.c — Sobre o Krypx
- * Exibe informacoes do sistema, versao, hardware.
- */
+
 
 #include <apps/about.h>
 #include <gui/window.h>
@@ -23,7 +20,7 @@ static void about_on_paint(window_t *win) {
 
     canvas_fill_rect(bx, by, w, win->content_h, 0x001E272E);
 
-    /* Logo / Header */
+    
     canvas_fill_gradient(bx, by, w, 60, 0x00003580, 0x001E272E);
     int cx = bx + w/2;
     canvas_draw_string(cx - 40, by + 8,  "Krypx OS", 0x0074B9FF, COLOR_TRANSPARENT);
@@ -34,19 +31,19 @@ static void about_on_paint(window_t *win) {
     uint32_t lbl = 0x0074B9FF;
     uint32_t val = 0x00DFE6E9;
 
-    /* Versao */
+    
     canvas_draw_string(lx,       y, "Versao:", lbl, COLOR_TRANSPARENT);
     canvas_draw_string(lx + 80,  y, KRYPX_VERSION_STR, val, COLOR_TRANSPARENT); y += 20;
 
-    /* Arquitetura */
+    
     canvas_draw_string(lx,       y, "Arch:", lbl, COLOR_TRANSPARENT);
     canvas_draw_string(lx + 80,  y, "x86 32-bit (i686)", val, COLOR_TRANSPARENT); y += 20;
 
-    /* Build */
+    
     canvas_draw_string(lx,       y, "Build:", lbl, COLOR_TRANSPARENT);
     canvas_draw_string(lx + 80,  y, "gcc -m32 (fallback)", val, COLOR_TRANSPARENT); y += 20;
 
-    /* Uptime */
+    
     uint32_t secs = timer_get_seconds();
     char uptstr[32];
     uint32_t hh = secs/3600, mm = (secs/60)%60, ss = secs%60;
@@ -59,7 +56,7 @@ static void about_on_paint(window_t *win) {
     canvas_draw_string(lx,       y, "Uptime:", lbl, COLOR_TRANSPARENT);
     canvas_draw_string(lx + 80,  y, uptstr, val, COLOR_TRANSPARENT); y += 20;
 
-    /* Memoria livre */
+    
     uint32_t free_pages = pmm_get_free_pages();
     char memstr[32];
     uint32_t free_mb = (free_pages * 4) / 1024;
@@ -70,7 +67,7 @@ static void about_on_paint(window_t *win) {
     canvas_draw_string(lx,       y, "RAM:", lbl, COLOR_TRANSPARENT);
     canvas_draw_string(lx + 80,  y, memstr, val, COLOR_TRANSPARENT); y += 20;
 
-    /* Tela */
+    
     char resstr[32];
     resstr[0] = '0'+fb.width/1000%10;
     resstr[1] = '0'+fb.width/100%10;
@@ -85,7 +82,7 @@ static void about_on_paint(window_t *win) {
     canvas_draw_string(lx,       y, "Tela:", lbl, COLOR_TRANSPARENT);
     canvas_draw_string(lx + 80,  y, resstr, val, COLOR_TRANSPARENT); y += 30;
 
-    /* Separador */
+    
     canvas_draw_line(bx+8, y, bx+w-8, y, 0x00636E72);  y += 12;
 
     canvas_draw_string(cx-56, y, "Krypx — Custom Bare-Metal OS", 0x00636E72, COLOR_TRANSPARENT);

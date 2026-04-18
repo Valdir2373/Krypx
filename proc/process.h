@@ -1,7 +1,4 @@
-/*
- * proc/process.h — Process Control Block (PCB) do Krypx
- * Cada processo tem sua própria stack, page directory e file descriptors.
- */
+
 #ifndef _PROCESS_H
 #define _PROCESS_H
 
@@ -10,11 +7,10 @@
 #include <mm/vmm.h>
 #include <fs/vfs.h>
 
-#define MAX_PROCESSES  64
-#define MAX_FDS        16
-#define KERNEL_STACK_SIZE  8192   /* 8 KB de stack por processo */
+#define MAX_PROCESSES      64
+#define MAX_FDS            16
+#define KERNEL_STACK_SIZE  8192
 
-/* Estado do processo */
 typedef enum {
     PROC_READY   = 0,
     PROC_RUNNING = 1,
@@ -23,73 +19,66 @@ typedef enum {
     PROC_UNUSED  = 4,
 } proc_state_t;
 
-/* Modo de compatibilidade binária */
-#define COMPAT_NONE    0   /* ELF nativo Krypx */
-#define COMPAT_LINUX   1   /* ELF Linux i386 — syscalls traduzidas */
-#define COMPAT_WINDOWS 2   /* PE Windows  — em desenvolvimento */
+#define COMPAT_NONE    0
+#define COMPAT_LINUX   1
+#define COMPAT_WINDOWS 2
 
-/* Contexto de registradores salvo no context switch */
+/* Saved register context for context switching (must match switch.asm offsets) */
 typedef struct {
-    uint32_t eax, ebx, ecx, edx;
-    uint32_t esi, edi, ebp, esp;
-    uint32_t eip;
-    uint32_t eflags;
-    uint32_t cr3;
+    uint64_t rax, rbx, rcx, rdx;
+    uint64_t rsi, rdi, rbp, rsp;
+    uint64_t r8,  r9,  r10, r11;
+    uint64_t r12, r13, r14, r15;
+    uint64_t rip;
+    uint64_t rflags;
+    uint64_t cr3;
 } context_t;
 
-/* Process Control Block */
 typedef struct process {
     uint32_t      pid;
     char          name[64];
     proc_state_t  state;
-    uint32_t      priority;     /* 0 = maior prioridade */
+    uint32_t      priority;
 
-    context_t     ctx;          /* Contexto salvo no context switch */
+    context_t     ctx;
 
-    uint32_t     *page_dir;     /* Espaço de endereçamento (CR3) */
-    uint32_t      kernel_stack; /* Base da kernel stack */
-    uint32_t      user_stack;   /* Topo da user stack */
+    pml4e_t      *page_dir;      /* PML4 for this process */
+    uint64_t      kernel_stack;  /* RSP0 (top of kernel stack) */
+    uint64_t      user_stack;
 
-    uint32_t      heap_start;
-    uint32_t      heap_end;
+    uint64_t      heap_start;
+    uint64_t      heap_end;
 
-    vfs_node_t   *fds[MAX_FDS]; /* File descriptors */
-    uint32_t      fd_offsets[MAX_FDS];
+    vfs_node_t   *fds[MAX_FDS];
+    uint64_t      fd_offsets[MAX_FDS];
 
     uint32_t      uid;
     int32_t       exit_code;
-    uint8_t       compat_mode;  /* COMPAT_NONE / COMPAT_LINUX / COMPAT_WINDOWS */
+    uint8_t       compat_mode;
 
-    /* RAM alocada para este processo (apps GUI) */
-    void         *mem_block;    /* kmalloc'd — NULL para kernel */
-    uint32_t      mem_size;     /* Bytes alocados */
+    void         *mem_block;
+    uint64_t      mem_size;
+
+    char          cwd[256];          /* current working directory */
+    uint32_t      children[8];       /* PIDs of child processes */
+    uint32_t      nchildren;
+    bool          waiting_child;     /* blocked in waitpid */
+    int32_t       wait_result;       /* exit code of waited child */
 
     struct process *parent;
-    struct process *next;       /* Lista encadeada no scheduler */
+    struct process *next;
 } process_t;
 
-/* Inicializa o subsistema de processos */
-void process_init(void);
-
-/* Cria o processo kernel (pid=0) */
+void       process_init(void);
 process_t *process_create_kernel(void);
-
-/* Cria um processo userspace */
-process_t *process_create(const char *name, uint32_t entry, uint32_t priority);
-
-/* Termina o processo atual */
-void process_exit(int32_t code);
-
-/* Retorna o processo em execução */
+process_t *process_create(const char *name, uint64_t entry, uint32_t priority);
+void       process_exit(int32_t code);
 process_t *process_current(void);
-
-/* Retorna processo por PID */
+void       process_set_current(process_t *p);
 process_t *process_get(uint32_t pid);
+process_t *process_create_app(const char *name, uint64_t mem_bytes);
+void       process_kill(uint32_t pid);
+void       process_iterate(void (*cb)(process_t *p, void *ctx), void *ctx);
+void       process_child_exited(process_t *child);  /* wake waiting parent */
 
-/* Cria um processo representando uma aplicação GUI (aloca RAM, não entra no scheduler) */
-process_t *process_create_app(const char *name, uint32_t mem_bytes);
-
-/* Mata um processo e libera seus recursos de memória */
-void process_kill(uint32_t pid);
-
-#endif /* _PROCESS_H */
+#endif

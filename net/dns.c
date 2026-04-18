@@ -1,7 +1,4 @@
-/*
- * net/dns.c — DNS resolver simples (consulta A record via UDP porta 53)
- * Envia uma query DNS e aguarda a resposta por polling.
- */
+
 
 #include <net/dns.h>
 #include <net/udp.h>
@@ -14,7 +11,7 @@
 #define DNS_PORT      53
 #define DNS_CLIENT_PORT 1053
 
-/* Header DNS */
+
 typedef struct {
     uint16_t id;
     uint16_t flags;
@@ -28,9 +25,7 @@ static uint32_t dns_resolved_ip = 0;
 static bool     dns_got_reply   = false;
 static uint16_t dns_query_id    = 0;
 
-/* ============================================================
- * Monta nome DNS no formato wire (ex: "www.google.com" → \3www\6google\3com\0)
- * ============================================================ */
+
 static uint16_t dns_encode_name(const char *name, uint8_t *out) {
     uint16_t pos = 0;
     while (*name) {
@@ -47,9 +42,7 @@ static uint16_t dns_encode_name(const char *name, uint8_t *out) {
     return pos;
 }
 
-/* ============================================================
- * Callback UDP para respostas DNS
- * ============================================================ */
+
 static void dns_recv_cb(uint32_t src_ip, uint16_t src_port,
                          const void *data, uint16_t len)
 {
@@ -59,27 +52,27 @@ static void dns_recv_cb(uint32_t src_ip, uint16_t src_port,
     if (ntohs(hdr->id) != dns_query_id) return;
     if (ntohs(hdr->ancount) == 0) return;
 
-    /* Pula o header e a(s) question(s) */
+    
     const uint8_t *p = (const uint8_t *)data + sizeof(dns_hdr_t);
     const uint8_t *end = (const uint8_t *)data + len;
     uint16_t qdcount = ntohs(hdr->qdcount);
     uint16_t q;
     for (q = 0; q < qdcount; q++) {
-        /* Pula o QNAME */
+        
         while (p < end && *p != 0) {
             if ((*p & 0xC0) == 0xC0) { p += 2; goto next_q; }
             p += *p + 1;
         }
-        p++;  /* byte zero */
+        p++;  
 next_q:
-        p += 4;  /* QTYPE + QCLASS */
+        p += 4;  
     }
 
-    /* Lê o primeiro Answer */
+    
     uint16_t ancount = ntohs(hdr->ancount);
     uint16_t a;
     for (a = 0; a < ancount && p < end; a++) {
-        /* Pula o NAME (pode ser pointer) */
+        
         if ((*p & 0xC0) == 0xC0) p += 2;
         else {
             while (p < end && *p != 0) p += *p + 1;
@@ -87,11 +80,11 @@ next_q:
         }
         if (p + 10 > end) break;
         uint16_t rtype  = (uint16_t)((p[0] << 8) | p[1]);
-        /* skip class (2), ttl (4) */
+        
         uint16_t rdlen  = (uint16_t)((p[8] << 8) | p[9]);
         p += 10;
         if (rtype == 1 && rdlen == 4 && p + 4 <= end) {
-            /* A record */
+            
             dns_resolved_ip = *(uint32_t *)p;
             dns_got_reply   = true;
             return;
@@ -100,9 +93,7 @@ next_q:
     }
 }
 
-/* ============================================================
- * API pública
- * ============================================================ */
+
 void dns_init(void) {
     dns_resolved_ip = 0;
     dns_got_reply   = false;
@@ -117,7 +108,7 @@ uint32_t dns_resolve(const char *hostname) {
     dns_hdr_t *hdr = (dns_hdr_t *)buf;
     dns_query_id++;
     hdr->id      = htons(dns_query_id);
-    hdr->flags   = htons(0x0100);  /* RD=1 */
+    hdr->flags   = htons(0x0100);  
     hdr->qdcount = htons(1);
     hdr->ancount = 0;
     hdr->nscount = 0;
@@ -125,8 +116,8 @@ uint32_t dns_resolve(const char *hostname) {
 
     uint8_t *p = buf + sizeof(dns_hdr_t);
     p += dns_encode_name(hostname, p);
-    p[0] = 0; p[1] = 1;  /* QTYPE A */
-    p[2] = 0; p[3] = 1;  /* QCLASS IN */
+    p[0] = 0; p[1] = 1;  
+    p[2] = 0; p[3] = 1;  
     p += 4;
 
     uint16_t total = (uint16_t)(p - buf);

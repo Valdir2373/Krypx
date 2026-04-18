@@ -1,8 +1,3 @@
-/*
- * mm/vmm.c — Virtual Memory Manager
- * Identity map dos primeiros 8 MB com PSE (4 MB pages) para o kernel.
- * vmm_map_page usa page tables normais de 4 KB para mapeamentos finos.
- */
 
 #include <mm/vmm.h>
 #include <mm/pmm.h>
@@ -10,157 +5,168 @@
 #include <system.h>
 #include <types.h>
 
-/* Page Directory do kernel — alinhado a 4 KB */
-static uint32_t kernel_page_dir[1024] __attribute__((aligned(4096)));
+/* Kernel PML4 — 4-level page tables, 4KB aligned */
+static pml4e_t kernel_pml4[512] __attribute__((aligned(4096)));
+static uint64_t kernel_pdpt[512] __attribute__((aligned(4096)));
+static uint64_t kernel_pd[512]   __attribute__((aligned(4096)));
 
-/* Page Directory ativo */
-static uint32_t *current_dir = 0;
+static pml4e_t *current_dir = 0;
 
-/* ============================================================
- * Obtém ponteiro para a page table do índice dir_idx,
- * criando uma nova (via PMM) se necessário.
- * ============================================================ */
-static uint32_t *get_or_create_table(uint32_t *dir, uint32_t dir_idx,
-                                      uint32_t flags) {
-    uint32_t entry = dir[dir_idx];
-
-    if (entry & PAGE_PRESENT) {
-        /* Tabela já existe — retorna seu endereço (bits [31:12]) */
-        return (uint32_t *)(entry & ~0xFFF);
-    }
-
-    /* Aloca nova page table */
-    uint32_t phys = pmm_alloc_page();
+/* Allocate and zero a 4KB page table (returns pointer = physical address,
+ * since we identity-map all RAM) */
+static uint64_t *alloc_table(void) {
+    uint64_t phys = pmm_alloc_page();
     if (!phys) return 0;
-
-    /* Zera a nova tabela */
-    uint32_t *table = (uint32_t *)phys;
+    uint64_t *t = (uint64_t *)phys;
     uint32_t i;
-    for (i = 0; i < 1024; i++) table[i] = 0;
-
-    /* Registra no diretório */
-    dir[dir_idx] = phys | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER);
-    return table;
+    for (i = 0; i < 512; i++) t[i] = 0;
+    return t;
 }
 
-void vmm_map_page(uint32_t *dir, uint32_t virt, uint32_t phys, uint32_t flags) {
-    uint32_t dir_idx   = virt >> 22;
-    uint32_t table_idx = (virt >> 12) & 0x3FF;
+void vmm_map_page(pml4e_t *pml4, uint64_t virt, uint64_t phys, uint64_t flags) {
+    uint64_t i4 = PML4_INDEX(virt);
+    uint64_t i3 = PDPT_INDEX(virt);
+    uint64_t i2 = PD_INDEX(virt);
+    uint64_t i1 = PT_INDEX(virt);
 
-    uint32_t *table = get_or_create_table(dir, dir_idx, flags);
-    if (!table) return;
+    /* PML4 → PDPT */
+    if (!(pml4[i4] & PAGE_PRESENT)) {
+        uint64_t *pdpt = alloc_table();
+        if (!pdpt) return;
+        pml4[i4] = (uint64_t)pdpt | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER);
+    }
+    uint64_t *pdpt = (uint64_t *)(pml4[i4] & ~0xFFFULL);
 
-    table[table_idx] = (phys & ~0xFFF) | PAGE_PRESENT | flags;
+    /* PDPT → PD */
+    if (!(pdpt[i3] & PAGE_PRESENT)) {
+        uint64_t *pd = alloc_table();
+        if (!pd) return;
+        pdpt[i3] = (uint64_t)pd | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER);
+    }
+    uint64_t *pd = (uint64_t *)(pdpt[i3] & ~0xFFFULL);
+
+    /* PD: if it's a 2MB page, split into 4KB entries first */
+    if (pd[i2] & PAGE_2MB) {
+        uint64_t base2mb = pd[i2] & ~((uint64_t)0x1FFFFF);
+        uint64_t *pt = alloc_table();
+        if (!pt) return;
+        uint32_t k;
+        for (k = 0; k < 512; k++)
+            pt[k] = (base2mb + k * PAGE_SIZE) | PAGE_PRESENT | PAGE_WRITABLE;
+        pd[i2] = (uint64_t)pt | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER);
+    }
+
+    /* PD → PT */
+    if (!(pd[i2] & PAGE_PRESENT)) {
+        uint64_t *pt = alloc_table();
+        if (!pt) return;
+        pd[i2] = (uint64_t)pt | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER);
+    }
+    uint64_t *pt = (uint64_t *)(pd[i2] & ~0xFFFULL);
+
+    /* PT → page */
+    pt[i1] = (phys & ~0xFFFULL) | PAGE_PRESENT | flags;
 
     __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
 }
 
-void vmm_unmap_page(uint32_t *dir, uint32_t virt) {
-    uint32_t dir_idx   = virt >> 22;
-    uint32_t table_idx = (virt >> 12) & 0x3FF;
+void vmm_unmap_page(pml4e_t *pml4, uint64_t virt) {
+    uint64_t i4 = PML4_INDEX(virt);
+    uint64_t i3 = PDPT_INDEX(virt);
+    uint64_t i2 = PD_INDEX(virt);
+    uint64_t i1 = PT_INDEX(virt);
 
-    uint32_t de = dir[dir_idx];
-    if (!(de & PAGE_PRESENT)) return;
-
-    uint32_t *table = (uint32_t *)(de & ~0xFFF);
-    table[table_idx] = 0;
-
+    if (!(pml4[i4] & PAGE_PRESENT)) return;
+    uint64_t *pdpt = (uint64_t *)(pml4[i4] & ~0xFFFULL);
+    if (!(pdpt[i3] & PAGE_PRESENT)) return;
+    uint64_t *pd = (uint64_t *)(pdpt[i3] & ~0xFFFULL);
+    if (!(pd[i2] & PAGE_PRESENT)) return;
+    uint64_t *pt = (uint64_t *)(pd[i2] & ~0xFFFULL);
+    pt[i1] = 0;
     __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
 }
 
-uint32_t vmm_get_physical(uint32_t *dir, uint32_t virt) {
-    uint32_t dir_idx   = virt >> 22;
-    uint32_t table_idx = (virt >> 12) & 0x3FF;
+uint64_t vmm_get_physical(pml4e_t *pml4, uint64_t virt) {
+    uint64_t i4 = PML4_INDEX(virt);
+    uint64_t i3 = PDPT_INDEX(virt);
+    uint64_t i2 = PD_INDEX(virt);
+    uint64_t i1 = PT_INDEX(virt);
 
-    uint32_t de = dir[dir_idx];
-    if (!(de & PAGE_PRESENT)) return 0;
-
-    uint32_t *table = (uint32_t *)(de & ~0xFFF);
-    uint32_t  te    = table[table_idx];
-    if (!(te & PAGE_PRESENT)) return 0;
-
-    return (te & ~0xFFF) | (virt & 0xFFF);
+    if (!(pml4[i4] & PAGE_PRESENT)) return 0;
+    uint64_t *pdpt = (uint64_t *)(pml4[i4] & ~0xFFFULL);
+    if (!(pdpt[i3] & PAGE_PRESENT)) return 0;
+    uint64_t *pd = (uint64_t *)(pdpt[i3] & ~0xFFFULL);
+    if (!(pd[i2] & PAGE_PRESENT)) return 0;
+    if (pd[i2] & PAGE_2MB)
+        return (pd[i2] & ~(uint64_t)0x1FFFFF) | (virt & 0x1FFFFF);
+    uint64_t *pt = (uint64_t *)(pd[i2] & ~0xFFFULL);
+    if (!(pt[i1] & PAGE_PRESENT)) return 0;
+    return (pt[i1] & ~0xFFFULL) | (virt & 0xFFF);
 }
 
-void vmm_map_range(uint32_t *dir, uint32_t virt, uint32_t phys,
-                   uint32_t size, uint32_t flags) {
-    uint32_t offset;
-    for (offset = 0; offset < size; offset += PAGE_SIZE) {
-        vmm_map_page(dir, virt + offset, phys + offset, flags);
-    }
+void vmm_map_range(pml4e_t *pml4, uint64_t virt, uint64_t phys,
+                   uint64_t size, uint64_t flags) {
+    uint64_t offset;
+    for (offset = 0; offset < size; offset += PAGE_SIZE)
+        vmm_map_page(pml4, virt + offset, phys + offset, flags);
 }
 
-uint32_t *vmm_create_address_space(void) {
-    uint32_t phys = pmm_alloc_page();
+/* Create a new address space (copy kernel mappings from kernel_pml4 entry 0) */
+pml4e_t *vmm_create_address_space(void) {
+    uint64_t phys = pmm_alloc_page();
     if (!phys) return 0;
-
-    uint32_t *dir = (uint32_t *)phys;
+    pml4e_t *pml4 = (pml4e_t *)phys;
     uint32_t i;
-
-    for (i = 0; i < 1024; i++) dir[i] = 0;
-
-    /*
-     * Copia o identity map do kernel (entradas 0-63 = primeiros 256 MB).
-     * Sem isso, ao trocar CR3 para um novo processo, o código do kernel
-     * (em ~1 MB) e o heap (em ~8 MB) ficariam inacessíveis.
-     */
-    for (i = 0; i < 64; i++) {
-        dir[i] = kernel_page_dir[i];
-    }
-
-    /* Copia também a região alta do kernel (0xC0000000+), se houver */
-    for (i = 768; i < 1024; i++) {
-        dir[i] = kernel_page_dir[i];
-    }
-    return dir;
+    for (i = 0; i < 512; i++) pml4[i] = 0;
+    /* Share the kernel's first PML4 entry (identity map 0–4 GB) */
+    pml4[0] = kernel_pml4[0];
+    return pml4;
 }
 
-void vmm_switch_address_space(uint32_t *dir) {
-    current_dir = dir;
-    __asm__ volatile ("mov %0, %%cr3" : : "r"((uint32_t)dir) : "memory");
+void vmm_switch_address_space(pml4e_t *pml4) {
+    current_dir = pml4;
+    __asm__ volatile ("mov %0, %%cr3" : : "r"((uint64_t)pml4) : "memory");
 }
 
-uint32_t *vmm_get_current_dir(void) {
+pml4e_t *vmm_get_current_dir(void) {
     return current_dir;
 }
 
-/* ============================================================
- * vmm_init — Identity map com PSE (4 MB pages) e ativa CR0.PG
- * ============================================================ */
 void vmm_init(void) {
     uint32_t i;
-
-    for (i = 0; i < 1024; i++) kernel_page_dir[i] = 0;
-
-    /*
-     * Identity map dos primeiros 256 MB com PSE (4 MB pages por entrada):
-     * 64 entradas × 4 MB = 256 MB — cobre toda a RAM típica do QEMU (-m 256M).
-     * Isso garante que endereços físicos alocados pelo PMM em qualquer parte
-     * da RAM sejam acessíveis pelo kernel via identidade virtual=físico.
-     */
-    uint32_t mb4;
-    for (mb4 = 0; mb4 < 64; mb4++) {
-        kernel_page_dir[mb4] = (mb4 * 0x400000U) | PAGE_PRESENT | PAGE_WRITABLE | PAGE_4MB;
+    for (i = 0; i < 512; i++) {
+        kernel_pml4[i] = 0;
+        kernel_pdpt[i] = 0;
+        kernel_pd[i]   = 0;
     }
 
-    /* Ativa PSE (CR4 bit 4) */
-    __asm__ volatile (
-        "mov %%cr4, %%eax\n"
-        "or  $0x10,  %%eax\n"
-        "mov %%eax, %%cr4\n"
-        : : : "eax"
-    );
+    /* Identity map 0–4 GB using 2MB pages:
+     * kernel_pml4[0] → kernel_pdpt → 4 × kernel_pd (via 4 PDPT entries × 512 × 2MB) */
+    /* One PDPT entry covers 1 GB; we need 4 entries for 4 GB */
+    /* Use single kernel_pdpt with entries 0-3 each pointing to a separate PD */
+    /* For simplicity, use four inline static PDs */
+    static uint64_t kpd0[512] __attribute__((aligned(4096)));
+    static uint64_t kpd1[512] __attribute__((aligned(4096)));
+    static uint64_t kpd2[512] __attribute__((aligned(4096)));
+    static uint64_t kpd3[512] __attribute__((aligned(4096)));
+    /* Fill each PD with 512 × 2MB identity entries */
+    for (i = 0; i < 512; i++) {
+        kpd0[i] = ((uint64_t)i << 21) | PAGE_PRESENT | PAGE_WRITABLE | PAGE_2MB;
+        kpd1[i] = (((uint64_t)512 + i) << 21) | PAGE_PRESENT | PAGE_WRITABLE | PAGE_2MB;
+        kpd2[i] = (((uint64_t)1024 + i) << 21) | PAGE_PRESENT | PAGE_WRITABLE | PAGE_2MB;
+        kpd3[i] = (((uint64_t)1536 + i) << 21) | PAGE_PRESENT | PAGE_WRITABLE | PAGE_2MB;
+    }
+    kernel_pdpt[0] = (uint64_t)kpd0 | PAGE_PRESENT | PAGE_WRITABLE;
+    kernel_pdpt[1] = (uint64_t)kpd1 | PAGE_PRESENT | PAGE_WRITABLE;
+    kernel_pdpt[2] = (uint64_t)kpd2 | PAGE_PRESENT | PAGE_WRITABLE;
+    kernel_pdpt[3] = (uint64_t)kpd3 | PAGE_PRESENT | PAGE_WRITABLE;
 
-    /* Carrega CR3 */
-    __asm__ volatile ("mov %0, %%cr3" : : "r"((uint32_t)kernel_page_dir) : "memory");
+    kernel_pml4[0] = (uint64_t)kernel_pdpt | PAGE_PRESENT | PAGE_WRITABLE;
 
-    /* Ativa paginação: CR0 bit 31 */
-    __asm__ volatile (
-        "mov %%cr0, %%eax\n"
-        "or  $0x80000000, %%eax\n"
-        "mov %%eax, %%cr0\n"
-        : : : "eax"
-    );
-
-    current_dir = kernel_page_dir;
+    /* Reload CR3 with the new proper kernel PML4.
+     * The boot.asm already set up a minimal identity map; we keep it but
+     * switch to our managed kernel_pml4 for consistency. */
+    __asm__ volatile ("mov %0, %%cr3" : : "r"((uint64_t)kernel_pml4) : "memory");
+    current_dir = kernel_pml4;
 }
+

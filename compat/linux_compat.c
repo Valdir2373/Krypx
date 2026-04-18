@@ -8,6 +8,7 @@
  */
 
 #include "linux_compat.h"
+#include <io.h>
 #include <proc/process.h>
 #include <proc/scheduler.h>
 #include <mm/vmm.h>
@@ -316,6 +317,20 @@ static int32_t lx_read(uint32_t fd, char *buf, uint32_t count) {
     return n;
 }
 
+/* ── serial helper (COM1) ────────────────────────────────────────────────── */
+static void lx_ser_putc(char c) {
+    /* Wait for transmit empty */
+    while (!(inb(0x3FD) & 0x20));
+    outb(0x3F8, (uint8_t)c);
+}
+static void lx_ser_write(const char *buf, uint32_t n) {
+    uint32_t i;
+    for (i = 0; i < n; i++) {
+        if (buf[i] == '\n') lx_ser_putc('\r');
+        lx_ser_putc(buf[i]);
+    }
+}
+
 /* ── write ───────────────────────────────────────────────────────────────── */
 static int32_t lx_write(uint32_t fd, const char *buf, uint32_t count) {
     if (!buf || count == 0) return -LINUX_EINVAL;
@@ -323,6 +338,7 @@ static int32_t lx_write(uint32_t fd, const char *buf, uint32_t count) {
         uint32_t i;
         if (g_output_fn) { for(i=0;i<count;i++) g_output_fn(buf[i]); }
         else { for(i=0;i<count;i++) vga_putchar(buf[i]); }
+        lx_ser_write(buf, count);   /* also mirror to serial */
         return (int32_t)count;
     }
     process_t *p = process_current();
@@ -607,7 +623,7 @@ static int32_t lx_brk(uint32_t addr) {
         uint32_t page = (p->heap_end + 0xFFF) & ~0xFFFU;
         uint32_t target = (addr + 0xFFF) & ~0xFFFU;
         while (page < target) {
-            uint32_t phys = pmm_alloc_page();
+            uint64_t phys = pmm_alloc_page();
             if (!phys) return -LINUX_ENOMEM;
             vmm_map_page(p->page_dir, page, phys, PAGE_PRESENT|PAGE_WRITABLE|PAGE_USER);
             page += 0x1000;
@@ -644,16 +660,16 @@ static int32_t lx_mmap2(uint32_t addr, uint32_t length, uint32_t prot,
         if (p) {
             uint32_t i;
             for (i = 0; i < pages; i++) {
-                uint32_t phys = pmm_alloc_page();
+                uint64_t phys = pmm_alloc_page();
                 if (!phys) return -LINUX_ENOMEM;
                 vmm_map_page(p->page_dir, base+i*0x1000, phys,
                              PAGE_PRESENT|PAGE_WRITABLE|PAGE_USER);
             }
-            memset((void *)base, 0, pages*0x1000);
+            memset((void *)(uintptr_t)base, 0, pages*0x1000);
             uint32_t foff = pgoff * 0x1000;
             uint32_t flen = p->fds[fd]->size;
             uint32_t copy = flen > length ? length : flen;
-            vfs_read(p->fds[fd], foff, copy, (uint8_t *)base);
+            vfs_read(p->fds[fd], foff, copy, (uint8_t *)(uintptr_t)base);
             return (int32_t)base;
         }
     }
@@ -662,12 +678,12 @@ static int32_t lx_mmap2(uint32_t addr, uint32_t length, uint32_t prot,
     if (!p) return -LINUX_ENOMEM;
     uint32_t i;
     for (i = 0; i < pages; i++) {
-        uint32_t phys = pmm_alloc_page();
+        uint64_t phys = pmm_alloc_page();
         if (!phys) return -LINUX_ENOMEM;
         vmm_map_page(p->page_dir, base+i*0x1000, phys,
                      PAGE_PRESENT|PAGE_WRITABLE|PAGE_USER);
     }
-    memset((void *)base, 0, pages*0x1000);
+    memset((void *)(uintptr_t)base, 0, pages*0x1000);
     return (int32_t)base;
 }
 
@@ -691,7 +707,7 @@ static int32_t lx_mremap(uint32_t old_addr, uint32_t old_size,
     if (!p) return -LINUX_ENOMEM;
     uint32_t i;
     for (i = 0; i < pages; i++) {
-        uint32_t phys = pmm_alloc_page();
+        uint64_t phys = pmm_alloc_page();
         if (!phys) return -LINUX_ENOMEM;
         vmm_map_page(p->page_dir, old_addr + old_size + i*0x1000, phys,
                      PAGE_PRESENT|PAGE_WRITABLE|PAGE_USER);
@@ -957,7 +973,7 @@ typedef struct {
 static int32_t lx_set_thread_area(linux_user_desc_t *u) {
     if (!u) return -LINUX_EINVAL;
     if (u->entry_number == (int32_t)-1) u->entry_number = 6;
-    gdt_set_tls(u->base_addr);
+    set_fs_base((uint64_t)u->base_addr);
     return 0;
 }
 
@@ -1087,36 +1103,50 @@ static int32_t lx_prctl(uint32_t op, uint32_t a, uint32_t b, uint32_t c, uint32_
 void linux_syscall_handler(registers_t *regs) {
     int32_t ret = -LINUX_ENOSYS;
 
-    switch (regs->eax) {
+    /* Debug: trace first few syscalls on serial */
+    {
+        static uint32_t dbg_count = 0;
+        if (dbg_count < 20) {
+            dbg_count++;
+            lx_ser_write("[LX] syscall eax=", 18);
+            char tmp[12]; int ti = 11; tmp[ti] = '\0';
+            uint32_t v = regs->rax;
+            do { tmp[--ti] = (char)('0' + v % 10); v /= 10; } while (v && ti > 0);
+            lx_ser_write(tmp + ti, 11 - ti);
+            lx_ser_write("\r\n", 2);
+        }
+    }
+
+    switch (regs->rax) {
     /* exit */
-    case 1:   ret = lx_exit((int32_t)regs->ebx); break;
-    case 252: ret = lx_exit((int32_t)regs->ebx); break;
+    case 1:   ret = lx_exit((int32_t)regs->rbx); break;
+    case 252: ret = lx_exit((int32_t)regs->rbx); break;
 
     /* fork / clone / vfork */
     case 2:   ret = lx_fork(); break;
-    case 120: ret = lx_clone(regs->ebx,regs->ecx,regs->edx,regs->esi,regs->edi); break;
+    case 120: ret = lx_clone(regs->rbx,regs->rcx,regs->rdx,regs->rsi,regs->rdi); break;
     case 190: ret = lx_fork(); break;
 
     /* read / write / open / close */
-    case 3:   ret = lx_read(regs->ebx, (char*)regs->ecx, regs->edx); break;
-    case 4:   ret = lx_write(regs->ebx, (const char*)regs->ecx, regs->edx); break;
-    case 5:   ret = lx_open((const char*)regs->ebx, regs->ecx, regs->edx); break;
-    case 6:   ret = lx_close(regs->ebx); break;
+    case 3:   ret = lx_read(regs->rbx, (char*)regs->rcx, regs->rdx); break;
+    case 4:   ret = lx_write(regs->rbx, (const char*)regs->rcx, regs->rdx); break;
+    case 5:   ret = lx_open((const char*)regs->rbx, regs->rcx, regs->rdx); break;
+    case 6:   ret = lx_close(regs->rbx); break;
 
     /* wait */
-    case 7:   ret = lx_wait4((int32_t)regs->ebx,(int32_t*)regs->ecx,regs->edx,0); break;
-    case 114: ret = lx_wait4((int32_t)regs->ebx,(int32_t*)regs->ecx,(int32_t)regs->edx,(void*)regs->esi); break;
+    case 7:   ret = lx_wait4((int32_t)regs->rbx,(int32_t*)regs->rcx,regs->rdx,0); break;
+    case 114: ret = lx_wait4((int32_t)regs->rbx,(int32_t*)regs->rcx,(int32_t)regs->rdx,(void*)regs->rsi); break;
 
     /* lseek / llseek */
-    case 19:  ret = lx_lseek(regs->ebx, (int32_t)regs->ecx, regs->edx); break;
-    case 140: ret = lx_llseek(regs->ebx, regs->ecx, regs->edx, (int64_t*)regs->esi, regs->edi); break;
+    case 19:  ret = lx_lseek(regs->rbx, (int32_t)regs->rcx, regs->rdx); break;
+    case 140: ret = lx_llseek(regs->rbx, regs->rcx, regs->rdx, (int64_t*)regs->rsi, regs->rdi); break;
 
     /* dup */
-    case 41:  ret = lx_dup(regs->ebx); break;
-    case 63:  ret = lx_dup2(regs->ebx, regs->ecx); break;
+    case 41:  ret = lx_dup(regs->rbx); break;
+    case 63:  ret = lx_dup2(regs->rbx, regs->rcx); break;
 
     /* pipe */
-    case 42:  ret = lx_pipe((int32_t*)regs->ebx); break;
+    case 42:  ret = lx_pipe((int32_t*)regs->rbx); break;
 
     /* getpid / getppid / gettid */
     case 20:  ret = lx_getpid(); break;
@@ -1130,88 +1160,88 @@ void linux_syscall_handler(registers_t *regs) {
     case 50: case 202: ret = lx_getegid(); break;
 
     /* memory */
-    case 45:  ret = lx_brk(regs->ebx); break;
-    case 90:  ret = lx_old_mmap((linux_mmap_args_t*)regs->ebx); break;
-    case 91:  ret = lx_munmap(regs->ebx, regs->ecx); break;
-    case 125: ret = lx_mprotect(regs->ebx, regs->ecx, regs->edx); break;
-    case 163: ret = lx_mremap(regs->ebx, regs->ecx, regs->edx, regs->esi); break;
-    case 192: ret = lx_mmap2(regs->ebx, regs->ecx, regs->edx, regs->esi,
-                              (int32_t)regs->edi, regs->ebp); break;
+    case 45:  ret = lx_brk(regs->rbx); break;
+    case 90:  ret = lx_old_mmap((linux_mmap_args_t*)regs->rbx); break;
+    case 91:  ret = lx_munmap(regs->rbx, regs->rcx); break;
+    case 125: ret = lx_mprotect(regs->rbx, regs->rcx, regs->rdx); break;
+    case 163: ret = lx_mremap(regs->rbx, regs->rcx, regs->rdx, regs->rsi); break;
+    case 192: ret = lx_mmap2(regs->rbx, regs->rcx, regs->rdx, regs->rsi,
+                              (int32_t)regs->rdi, regs->rbp); break;
 
     /* file info */
-    case 33:  ret = lx_access((const char*)regs->ebx, regs->ecx); break;
-    case 85:  ret = lx_readlink((const char*)regs->ebx,(char*)regs->ecx,regs->edx); break;
-    case 106: ret = lx_stat((const char*)regs->ebx,(linux_stat_t*)regs->ecx); break;
-    case 107: ret = lx_stat((const char*)regs->ebx,(linux_stat_t*)regs->ecx); break;
-    case 108: ret = lx_fstat(regs->ebx,(linux_stat_t*)regs->ecx); break;
-    case 195: ret = lx_stat64((const char*)regs->ebx,(linux_stat64_t*)regs->ecx); break;
-    case 196: ret = lx_lstat64((const char*)regs->ebx,(linux_stat64_t*)regs->ecx); break;
-    case 197: ret = lx_fstat64(regs->ebx,(linux_stat64_t*)regs->ecx); break;
+    case 33:  ret = lx_access((const char*)regs->rbx, regs->rcx); break;
+    case 85:  ret = lx_readlink((const char*)regs->rbx,(char*)regs->rcx,regs->rdx); break;
+    case 106: ret = lx_stat((const char*)regs->rbx,(linux_stat_t*)regs->rcx); break;
+    case 107: ret = lx_stat((const char*)regs->rbx,(linux_stat_t*)regs->rcx); break;
+    case 108: ret = lx_fstat(regs->rbx,(linux_stat_t*)regs->rcx); break;
+    case 195: ret = lx_stat64((const char*)regs->rbx,(linux_stat64_t*)regs->rcx); break;
+    case 196: ret = lx_lstat64((const char*)regs->rbx,(linux_stat64_t*)regs->rcx); break;
+    case 197: ret = lx_fstat64(regs->rbx,(linux_stat64_t*)regs->rcx); break;
 
     /* directory */
-    case 141: ret = lx_getdents(regs->ebx,(linux_dirent_t*)regs->ecx,regs->edx); break;
-    case 220: ret = lx_getdents64(regs->ebx,(linux_dirent64_t*)regs->ecx,regs->edx); break;
-    case 12:  ret = lx_chdir((const char*)regs->ebx); break;
-    case 183: ret = lx_getcwd((char*)regs->ebx, regs->ecx); break;
-    case 39:  ret = lx_mkdir((const char*)regs->ebx, regs->ecx); break;
-    case 10:  ret = lx_unlink((const char*)regs->ebx); break;
+    case 141: ret = lx_getdents(regs->rbx,(linux_dirent_t*)regs->rcx,regs->rdx); break;
+    case 220: ret = lx_getdents64(regs->rbx,(linux_dirent64_t*)regs->rcx,regs->rdx); break;
+    case 12:  ret = lx_chdir((const char*)regs->rbx); break;
+    case 183: ret = lx_getcwd((char*)regs->rbx, regs->rcx); break;
+    case 39:  ret = lx_mkdir((const char*)regs->rbx, regs->rcx); break;
+    case 10:  ret = lx_unlink((const char*)regs->rbx); break;
     case 40:  ret = 0; break; /* rmdir stub */
-    case 38:  ret = lx_rename((const char*)regs->ebx,(const char*)regs->ecx); break;
+    case 38:  ret = lx_rename((const char*)regs->rbx,(const char*)regs->rcx); break;
 
     /* file ops */
-    case 54:  ret = lx_ioctl(regs->ebx, regs->ecx, regs->edx); break;
-    case 55:  ret = lx_fcntl64(regs->ebx, regs->ecx, regs->edx); break;
-    case 221: ret = lx_fcntl64(regs->ebx, regs->ecx, regs->edx); break;
-    case 92:  ret = lx_ftruncate(regs->ebx, regs->ecx); break;
-    case 194: ret = lx_ftruncate(regs->ebx, regs->ecx); break;
-    case 118: ret = lx_fsync(regs->ebx); break;
-    case 148: ret = lx_fsync(regs->ebx); break;
-    case 60:  ret = lx_umask(regs->ebx); break;
-    case 15:  ret = lx_chmod((const char*)regs->ebx, regs->ecx); break;
-    case 94:  ret = lx_fchmod(regs->ebx, regs->ecx); break;
-    case 182: ret = lx_chown((const char*)regs->ebx, regs->ecx, regs->edx); break;
-    case 207: ret = lx_fchown(regs->ebx, regs->ecx, regs->edx); break;
+    case 54:  ret = lx_ioctl(regs->rbx, regs->rcx, regs->rdx); break;
+    case 55:  ret = lx_fcntl64(regs->rbx, regs->rcx, regs->rdx); break;
+    case 221: ret = lx_fcntl64(regs->rbx, regs->rcx, regs->rdx); break;
+    case 92:  ret = lx_ftruncate(regs->rbx, regs->rcx); break;
+    case 194: ret = lx_ftruncate(regs->rbx, regs->rcx); break;
+    case 118: ret = lx_fsync(regs->rbx); break;
+    case 148: ret = lx_fsync(regs->rbx); break;
+    case 60:  ret = lx_umask(regs->rbx); break;
+    case 15:  ret = lx_chmod((const char*)regs->rbx, regs->rcx); break;
+    case 94:  ret = lx_fchmod(regs->rbx, regs->rcx); break;
+    case 182: ret = lx_chown((const char*)regs->rbx, regs->rcx, regs->rdx); break;
+    case 207: ret = lx_fchown(regs->rbx, regs->rcx, regs->rdx); break;
 
     /* readv / writev */
-    case 145: ret = lx_readv(regs->ebx,(linux_iovec_t*)regs->ecx,regs->edx); break;
-    case 146: ret = lx_writev(regs->ebx,(linux_iovec_t*)regs->ecx,regs->edx); break;
+    case 145: ret = lx_readv(regs->rbx,(linux_iovec_t*)regs->rcx,regs->rdx); break;
+    case 146: ret = lx_writev(regs->rbx,(linux_iovec_t*)regs->rcx,regs->rdx); break;
 
     /* select / poll */
-    case 82: case 142: ret = lx_select(regs->ebx,(uint32_t*)regs->ecx,(uint32_t*)regs->edx,(uint32_t*)regs->esi,(linux_timeval_t*)regs->edi); break;
-    case 168: ret = lx_poll((linux_pollfd_t*)regs->ebx,regs->ecx,(int32_t)regs->edx); break;
+    case 82: case 142: ret = lx_select(regs->rbx,(uint32_t*)regs->rcx,(uint32_t*)regs->rdx,(uint32_t*)regs->rsi,(linux_timeval_t*)regs->rdi); break;
+    case 168: ret = lx_poll((linux_pollfd_t*)regs->rbx,regs->rcx,(int32_t)regs->rdx); break;
 
     /* time */
-    case 13:  ret = lx_time((uint32_t*)regs->ebx); break;
-    case 78:  ret = lx_gettimeofday((linux_timeval_t*)regs->ebx,(void*)regs->ecx); break;
-    case 162: ret = lx_nanosleep((linux_timespec_t*)regs->ebx,(linux_timespec_t*)regs->ecx); break;
-    case 265: ret = lx_clock_gettime(regs->ebx,(linux_timespec_t*)regs->ecx); break;
-    case 263: ret = lx_clock_gettime(regs->ebx,(linux_timespec_t*)regs->ecx); break;
+    case 13:  ret = lx_time((uint32_t*)regs->rbx); break;
+    case 78:  ret = lx_gettimeofday((linux_timeval_t*)regs->rbx,(void*)regs->rcx); break;
+    case 162: ret = lx_nanosleep((linux_timespec_t*)regs->rbx,(linux_timespec_t*)regs->rcx); break;
+    case 265: ret = lx_clock_gettime(regs->rbx,(linux_timespec_t*)regs->rcx); break;
+    case 263: ret = lx_clock_gettime(regs->rbx,(linux_timespec_t*)regs->rcx); break;
 
     /* sysinfo */
-    case 116: ret = lx_sysinfo((linux_sysinfo_t*)regs->ebx); break;
-    case 122: ret = lx_uname((linux_utsname_t*)regs->ebx); break;
+    case 116: ret = lx_sysinfo((linux_sysinfo_t*)regs->rbx); break;
+    case 122: ret = lx_uname((linux_utsname_t*)regs->rbx); break;
 
     /* futex / threading */
-    case 240: ret = lx_futex((uint32_t*)regs->ebx,(int32_t)regs->ecx,regs->edx,(linux_timespec_t*)regs->esi,(uint32_t*)regs->edi,regs->ebp); break;
-    case 243: ret = lx_set_thread_area((linux_user_desc_t*)regs->ebx); break;
-    case 258: ret = lx_set_tid_addr((uint32_t*)regs->ebx); break;
+    case 240: ret = lx_futex((uint32_t*)regs->rbx,(int32_t)regs->rcx,regs->rdx,(linux_timespec_t*)regs->rsi,(uint32_t*)regs->rdi,regs->rbp); break;
+    case 243: ret = lx_set_thread_area((linux_user_desc_t*)regs->rbx); break;
+    case 258: ret = lx_set_tid_addr((uint32_t*)regs->rbx); break;
     case 158: ret = lx_sched_yield(); break;
-    case 172: ret = lx_prctl(regs->ebx,regs->ecx,regs->edx,regs->esi,regs->edi); break;
+    case 172: ret = lx_prctl(regs->rbx,regs->rcx,regs->rdx,regs->rsi,regs->rdi); break;
 
     /* rlimit */
-    case 75: case 76: case 191: ret = lx_getrlimit(regs->ebx,(linux_rlimit_t*)regs->ecx); break;
+    case 75: case 76: case 191: ret = lx_getrlimit(regs->rbx,(linux_rlimit_t*)regs->rcx); break;
 
     /* signals */
     case 48:  ret = 0; break;
     case 67:  ret = 0; break;
     case 119: ret = lx_rt_sigreturn(); break;
     case 173: ret = lx_rt_sigreturn(); break;
-    case 174: ret = lx_rt_sigaction((int32_t)regs->ebx,(void*)regs->ecx,(void*)regs->edx,regs->esi); break;
-    case 175: ret = lx_rt_sigprocmask((int32_t)regs->ebx,(void*)regs->ecx,(void*)regs->edx,regs->esi); break;
-    case 186: ret = lx_sigaltstack((void*)regs->ebx,(void*)regs->ecx); break;
+    case 174: ret = lx_rt_sigaction((int32_t)regs->rbx,(void*)regs->rcx,(void*)regs->rdx,regs->rsi); break;
+    case 175: ret = lx_rt_sigprocmask((int32_t)regs->rbx,(void*)regs->rcx,(void*)regs->rdx,regs->rsi); break;
+    case 186: ret = lx_sigaltstack((void*)regs->rbx,(void*)regs->rcx); break;
 
     /* socket */
-    case 102: ret = lx_socketcall(regs->ebx,(uint32_t*)regs->ecx); break;
+    case 102: ret = lx_socketcall(regs->rbx,(uint32_t*)regs->rcx); break;
 
     /* misc stubs that must return success */
     case 37:  ret = 0; break; /* kill */
@@ -1240,7 +1270,7 @@ void linux_syscall_handler(registers_t *regs) {
         break;
     }
 
-    regs->eax = (uint32_t)ret;
+    regs->rax = (uint32_t)ret;
 }
 
 void linux_compat_init(void) { /* nothing needed */ }

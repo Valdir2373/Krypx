@@ -1,7 +1,4 @@
-/*
- * security/users.c — Gerenciamento de usuários do Krypx
- * Mantém tabela de usuários na RAM. Root é criado na inicialização.
- */
+
 
 #include <security/users.h>
 #include <security/auth.h>
@@ -20,9 +17,9 @@ void users_init(void) {
     next_uid   = 0;
     current_user = NULL;
 
-    /* Cria usuário root com senha "krypx" */
+    
     user_create("root", "krypx", PRIV_ROOT);
-    /* Faz login automático como root na inicialização */
+    
     current_user = user_find("root");
 }
 
@@ -30,7 +27,7 @@ int user_create(const char *username, const char *password, uint8_t priv) {
     if (user_count >= MAX_USERS) return -1;
     if (!username || !password) return -1;
 
-    /* Verifica duplicata */
+    
     if (user_find(username)) return -1;
 
     uint32_t idx = user_count++;
@@ -39,13 +36,13 @@ int user_create(const char *username, const char *password, uint8_t priv) {
     user_table[idx].gid        = user_table[idx].uid;
     user_table[idx].privileges = priv;
 
-    /* Copia username com tamanho limitado */
+    
     uint32_t i;
     for (i = 0; i < USERNAME_MAX - 1 && username[i]; i++)
         user_table[idx].username[i] = username[i];
     user_table[idx].username[i] = '\0';
 
-    /* Home dir: /home/username ou /root para root */
+    
     if (priv == PRIV_ROOT) {
         memcpy(user_table[idx].home_dir, "/root", 6);
     } else {

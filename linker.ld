@@ -1,12 +1,13 @@
-/* linker.ld — Linker script do kernel Krypx
- * O kernel é carregado pelo GRUB em 0x00100000 (1 MB).
- * Tudo abaixo de 1 MB é reservado pelo BIOS/hardware.
+/* linker.ld — x86_64 kernel Krypx
+ * Kernel carregado pelo GRUB em 0x00100000 (1 MB), executa em 64-bit long mode.
  */
+
+OUTPUT_FORMAT(elf64-x86-64)
+OUTPUT_ARCH(i386:x86-64)
 
 ENTRY(_start)
 
 SECTIONS {
-    /* Endereço de carga: 1 MB */
     . = 0x00100000;
 
     /* Seção .multiboot — DEVE vir primeiro (GRUB procura nos primeiros 8 KB) */

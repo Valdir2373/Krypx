@@ -1,6 +1,4 @@
-/*
- * security/permissions.c — Verificação de permissões de arquivo
- */
+
 
 #include <security/permissions.h>
 #include <types.h>
@@ -9,23 +7,23 @@ bool perm_check(uint32_t uid, uint32_t gid,
                 uint32_t uid_owner, uint32_t gid_owner,
                 uint16_t mode, uint8_t requested)
 {
-    /* root (uid=0) tem acesso total */
+    
     if (uid == 0) return true;
 
     uint8_t effective = 0;
 
     if (uid == uid_owner) {
-        /* Owner bits */
+        
         if (mode & PERM_OWNER_R) effective |= 4;
         if (mode & PERM_OWNER_W) effective |= 2;
         if (mode & PERM_OWNER_X) effective |= 1;
     } else if (gid == gid_owner) {
-        /* Group bits */
+        
         if (mode & PERM_GROUP_R) effective |= 4;
         if (mode & PERM_GROUP_W) effective |= 2;
         if (mode & PERM_GROUP_X) effective |= 1;
     } else {
-        /* Other bits */
+        
         if (mode & PERM_OTHER_R) effective |= 4;
         if (mode & PERM_OTHER_W) effective |= 2;
         if (mode & PERM_OTHER_X) effective |= 1;

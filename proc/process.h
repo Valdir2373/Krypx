@@ -11,6 +11,13 @@
 #define MAX_FDS            16
 #define KERNEL_STACK_SIZE  8192
 
+/* Terminal I/O pipe — bridges Linux shell stdout/stdin to the GUI terminal */
+#define TERM_PIPE_SIZE     8192
+typedef struct {
+    uint8_t  buf[TERM_PIPE_SIZE];
+    uint32_t head, tail, len;
+} term_pipe_t;
+
 typedef enum {
     PROC_READY   = 0,
     PROC_RUNNING = 1,
@@ -65,6 +72,11 @@ typedef struct process {
     bool          waiting_child;     /* blocked in waitpid */
     int32_t       wait_result;       /* exit code of waited child */
 
+    /* Linux shell I/O bridge (WSL-style) */
+    term_pipe_t  *stdin_pipe;        /* GUI writes here; process reads fd 0 */
+    term_pipe_t  *stdout_pipe;       /* process writes fd 1/2; GUI reads here */
+    bool          wait_stdin;        /* blocked waiting for stdin data */
+
     struct process *parent;
     struct process *next;
 } process_t;
@@ -80,5 +92,7 @@ process_t *process_create_app(const char *name, uint64_t mem_bytes);
 void       process_kill(uint32_t pid);
 void       process_iterate(void (*cb)(process_t *p, void *ctx), void *ctx);
 void       process_child_exited(process_t *child);  /* wake waiting parent */
+void       process_stdin_push(process_t *p, char c);  /* send char to process stdin */
+int        process_stdout_read(process_t *p);          /* read char from process stdout (-1=empty) */
 
 #endif

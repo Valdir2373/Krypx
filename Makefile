@@ -212,12 +212,40 @@ disk.img:
 # Pré-requisitos no host: curl mtools bash
 # Uso: make install-firefox   (precisa de disk.img criado)
 
+FIREFOX_SCRIPT     := scripts/install_firefox.sh
+ALPINE_BASE_SCRIPT := scripts/install_alpine_base.sh
+
+# ============================================================
+# Alpine Linux Subsystem — instala rootfs mínimo no disk.img
+# ============================================================
+# Isso cria o "Linux interno" do Krypx (estilo WSL).
+# Depois de instalar, o terminal do Krypx abre /bin/sh do Alpine.
+# Use: apk add firefox / apk add python3 / wget / etc.
+#
+# Pré-requisitos no host: curl, mtools, tar
+install-alpine: disk.img
+	@echo "[ALPINE] Instalando Alpine Linux Subsystem no disk.img..."
+	@bash $(ALPINE_BASE_SCRIPT) disk.img
+	@echo "[ALPINE] Pronto! Execute 'make run-linux' para testar."
+
+# Roda Krypx com o Linux Subsystem (disco + rede)
+run-linux: iso disk.img
+	$(QEMU) -cdrom Krypx.iso -m 512M \
+	    -vga std \
+	    -boot d \
+	    -serial stdio \
+	    -netdev user,id=net0 -device e1000,netdev=net0 \
+	    -drive file=disk.img,format=raw,if=ide \
+	    -no-reboot \
+	    -no-shutdown \
+	    $(KVM_FLAG)
+
 FIREFOX_SCRIPT := scripts/install_firefox.sh
 
 install-firefox: disk.img
 	@echo "[FIREFOX] Instalando Firefox + dependencias..."
 	@bash $(FIREFOX_SCRIPT) disk.img
-	@echo "[FIREFOX] Pronto! Execute 'make run' e digite 'firefox' no terminal."
+	@echo "[FIREFOX] Pronto! Execute 'make run-linux' e digite 'apk add firefox'."
 
 # Roda com disco + rede (para Firefox)
 run-firefox: iso disk.img

@@ -76,6 +76,12 @@ static char term_input[256];
 static int  term_input_len = 0;
 static char term_cwd[256];  /* diretório atual */
 
+/* Linux shell subprocess (WSL-style) */
+static process_t  *term_shell_proc   = 0;
+static term_pipe_t term_shell_stdin_buf;   /* GUI → shell */
+static term_pipe_t term_shell_stdout_buf;  /* shell → GUI */
+static bool        term_linux_mode  = false;
+
 /* Histórico de comandos */
 #define TERM_HIST_SIZE  20
 static char term_hist[TERM_HIST_SIZE][256];
@@ -363,6 +369,86 @@ static void term_cmd_help(void) {
     term_puts("  shutdown / reboot     desligar / reiniciar\n");
 }
 
+/* ── Linux shell (WSL-style) ────────────────────────────────────────────── */
+
+/* Drain output from the Linux shell into the terminal display buffer */
+static void term_drain_shell_output(void) {
+    if (!term_shell_proc) return;
+    int c;
+    while ((c = process_stdout_read(term_shell_proc)) >= 0) {
+        term_putchar((char)c);
+    }
+}
+
+/* Launch Alpine's /bin/sh (busybox) as the terminal shell */
+static void term_start_linux_shell(void) {
+    /* Try common shell paths from the Alpine rootfs on disk */
+    const char *sh_paths[] = { "/bin/sh", "/bin/busybox", "/usr/bin/sh", 0 };
+    vfs_node_t *sh_node = 0;
+    const char *sh_path = 0;
+    int i;
+    for (i = 0; sh_paths[i]; i++) {
+        sh_node = vfs_resolve(sh_paths[i]);
+        if (sh_node && sh_node->size > 0 &&
+            (sh_node->flags & 0x7) != VFS_DIRECTORY) {
+            sh_path = sh_paths[i];
+            break;
+        }
+    }
+
+    if (!sh_node) {
+        term_puts("Linux subsystem: /bin/sh nao encontrado\n");
+        term_puts("Execute 'make install-alpine' no host para instalar Alpine base.\n");
+        term_puts("Usando shell interno do Krypx (modo fallback).\n");
+        return;
+    }
+
+    uint32_t size = sh_node->size;
+    uint8_t *data = (uint8_t *)kmalloc(size);
+    if (!data) { term_puts("Sem memoria para shell\n"); return; }
+    vfs_read(sh_node, 0, size, data);
+
+    if (size < 4 || data[0] != 0x7F || data[1] != 'E') {
+        kfree(data);
+        term_puts("Linux subsystem: /bin/sh invalido (nao e ELF)\n");
+        return;
+    }
+
+    process_t *proc = process_create("sh", 0, 2);
+    if (!proc) { kfree(data); term_puts("Falha ao criar processo\n"); return; }
+
+    /* Wire up I/O pipes */
+    memset(&term_shell_stdin_buf,  0, sizeof(term_pipe_t));
+    memset(&term_shell_stdout_buf, 0, sizeof(term_pipe_t));
+    proc->stdin_pipe  = &term_shell_stdin_buf;
+    proc->stdout_pipe = &term_shell_stdout_buf;
+
+    strncpy(proc->cwd, "/", 255);
+    proc->compat_mode = COMPAT_LINUX;
+
+    elf_load_result_t res;
+    if (elf_load(proc, data, size, &res) != 0) {
+        kfree(data);
+        process_kill(proc->pid);
+        term_puts("Falha ao carregar /bin/sh\n");
+        return;
+    }
+    kfree(data);
+
+    proc->ctx.rip    = res.entry_point;
+    proc->ctx.rsp    = res.user_stack_top;
+    proc->ctx.rflags = 0x202;
+    proc->heap_start = res.heap_base;
+    proc->heap_end   = res.heap_base;
+
+    scheduler_add(proc);
+    term_shell_proc  = proc;
+    term_linux_mode  = true;
+
+    term_puts("=== Linux Subsystem (Alpine) ===\n");
+    term_puts("Processo: "); term_puts(sh_path); term_puts("\n\n");
+}
+
 /* PATH directories to search for executables */
 static const char *exec_path[] = {
     "",          /* absolute paths used directly */
@@ -630,6 +716,9 @@ static void term_handle_command(const char *cmd) {
 }
 
 static void term_on_paint(window_t *win) {
+    /* Pull any new shell output into the display buffer */
+    if (term_linux_mode) term_drain_shell_output();
+
     canvas_init(fb.backbuf, fb.width, fb.height, fb.pitch);
 
     int bx = win->content_x, by = win->content_y;
@@ -649,13 +738,17 @@ static void term_on_paint(window_t *win) {
     int input_y = by + TERM_LINES * CHAR_HEIGHT + 4;
     canvas_fill_rect(bx, input_y, win->content_w, CHAR_HEIGHT + 6, 0x00111111);
 
-    /* Prompt with current directory */
+    /* Prompt: Linux mode shows "> ", built-in mode shows full path */
     char prompt[64];
-    memcpy(prompt, "root@krypx:", 11);
-    int pl = 11;
-    int cl = (int)strlen(term_cwd);
-    if (cl + pl < 50) { memcpy(prompt + pl, term_cwd, (uint32_t)cl); pl += cl; }
-    prompt[pl++] = '$'; prompt[pl++] = ' '; prompt[pl] = 0;
+    if (term_linux_mode) {
+        prompt[0] = '>'; prompt[1] = ' '; prompt[2] = 0;
+    } else {
+        memcpy(prompt, "root@krypx:", 11);
+        int pl = 11;
+        int cl = (int)strlen(term_cwd);
+        if (cl + pl < 50) { memcpy(prompt + pl, term_cwd, (uint32_t)cl); pl += cl; }
+        prompt[pl++] = '$'; prompt[pl++] = ' '; prompt[pl] = 0;
+    }
     canvas_draw_string(bx + 2, input_y + 3, prompt, 0x0000CEC9, COLOR_TRANSPARENT);
     int prompt_px = bx + 2 + (int)strlen(prompt) * CHAR_WIDTH;
     canvas_draw_string(prompt_px, input_y + 3, term_input, 0x00FFFFFF, COLOR_TRANSPARENT);
@@ -669,14 +762,33 @@ static void term_on_paint(window_t *win) {
 
 static void term_on_keydown(window_t *win, char key) {
     (void)win;
+
+    /* Flush any pending shell output first */
+    if (term_linux_mode) term_drain_shell_output();
+
     if (key == '\n') {
         term_input[term_input_len] = 0;
-        term_puts("> ");
-        term_puts(term_input);
-        term_puts("\n");
-        term_handle_command(term_input);
+
+        if (term_linux_mode && term_shell_proc &&
+            term_shell_proc->state != PROC_ZOMBIE) {
+            /* Send the typed line to the Linux shell's stdin */
+            int j;
+            for (j = 0; j < term_input_len; j++)
+                process_stdin_push(term_shell_proc, term_input[j]);
+            process_stdin_push(term_shell_proc, '\n');
+            /* Local echo of typed command */
+            term_puts(term_input);
+            term_putchar('\n');
+        } else {
+            /* Krypx built-in shell fallback */
+            term_puts("> ");
+            term_puts(term_input);
+            term_puts("\n");
+            term_handle_command(term_input);
+        }
         term_input_len = 0;
         term_input[0]  = 0;
+
     } else if (key == '\b') {
         if (term_input_len > 0) {
             term_input_len--;
@@ -975,10 +1087,17 @@ void desktop_init(void) {
         terminal_win->bg_color    = 0x00111111;
         terminal_win->on_paint    = term_on_paint;
         terminal_win->on_keydown  = term_on_keydown;
-        term_puts("Krypx Terminal v0.1\n");
-        term_puts("Digite 'help' para ver comandos\n");
-        term_puts("\n");
-        
+        term_puts("Krypx Terminal — Linux Subsystem\n");
+        term_puts("Iniciando shell...\n\n");
+
+        /* Try to start the Alpine Linux shell */
+        term_start_linux_shell();
+        if (!term_linux_mode) {
+            /* Fallback: built-in Krypx commands */
+            term_puts("Shell interno Krypx ativo.\n");
+            term_puts("Digite 'help' para ver comandos.\n\n");
+        }
+
         { process_t *p = process_create_app("Terminal", 128 * 1024);
           if (p) terminal_win->proc_pid = p->pid; }
     }

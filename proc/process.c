@@ -84,6 +84,31 @@ process_t *process_create(const char *name, uint64_t entry, uint32_t priority) {
     return p;
 }
 
+/* Push a byte to a process's stdin pipe and wake it if it was waiting */
+void process_stdin_push(process_t *p, char c) {
+    if (!p || !p->stdin_pipe) return;
+    term_pipe_t *pipe = p->stdin_pipe;
+    if (pipe->len < TERM_PIPE_SIZE) {
+        pipe->buf[pipe->head] = (uint8_t)c;
+        pipe->head = (pipe->head + 1) % TERM_PIPE_SIZE;
+        pipe->len++;
+    }
+    if (p->wait_stdin && p->state == PROC_BLOCKED) {
+        p->wait_stdin = false;
+        p->state      = PROC_READY;
+    }
+}
+
+/* Read one byte from a process's stdout pipe (-1 if empty) */
+int process_stdout_read(process_t *p) {
+    if (!p || !p->stdout_pipe || p->stdout_pipe->len == 0) return -1;
+    term_pipe_t *pipe = p->stdout_pipe;
+    uint8_t c = pipe->buf[pipe->tail];
+    pipe->tail = (pipe->tail + 1) % TERM_PIPE_SIZE;
+    pipe->len--;
+    return (int)c;
+}
+
 void process_child_exited(process_t *child) {
     if (!child || !child->parent) return;
     process_t *par = child->parent;

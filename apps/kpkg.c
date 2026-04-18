@@ -12,6 +12,8 @@
 #include <fs/vfs.h>
 #include <mm/heap.h>
 #include <lib/string.h>
+#include <net/socket.h>
+#include <net/dns.h>
 #include <types.h>
 
 /* ── Header structures ─────────────────────────────────────────────────── */

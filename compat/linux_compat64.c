@@ -335,8 +335,37 @@ static void fill_stat64(linux64_stat_t *st, vfs_node_t *node) {
 
 /* ── file operations ─────────────────────────────────────────────────────── */
 
+/* Read one byte from a term_pipe (non-blocking: returns 0 if empty) */
+static int term_pipe_read_byte(term_pipe_t *p, char *out) {
+    if (!p || p->len == 0) return 0;
+    *out = (char)p->buf[p->tail];
+    p->tail = (p->tail + 1) % TERM_PIPE_SIZE;
+    p->len--;
+    return 1;
+}
+
 static int64_t lx64_read(uint64_t fd, char *buf, uint64_t count) {
+    process_t *p = process_current();
     if (fd == 0) {
+        if (p && p->stdin_pipe) {
+            /* Block until data available */
+            while (p->stdin_pipe->len == 0) {
+                p->wait_stdin = true;
+                p->state = PROC_BLOCKED;
+                schedule();
+                p->wait_stdin = false;
+            }
+            /* Read up to count bytes (stop at newline) */
+            uint64_t i;
+            for (i = 0; i < count; i++) {
+                char c;
+                if (!term_pipe_read_byte(p->stdin_pipe, &c)) break;
+                buf[i] = c;
+                if (c == '\n') { i++; break; }
+            }
+            return (int64_t)i;
+        }
+        /* Fallback: direct keyboard (non-piped processes) */
         uint64_t i;
         for (i = 0; i < count; i++) {
             char c = keyboard_read();
@@ -347,7 +376,6 @@ static int64_t lx64_read(uint64_t fd, char *buf, uint64_t count) {
         return (int64_t)i;
     }
     if (fd == 1 || fd == 2) return ERR(EBADF);
-    process_t *p = process_current();
     if (!p || fd >= MAX_FDS || !p->fds[fd]) return ERR(EBADF);
     uint32_t n = vfs_read(p->fds[fd], (uint32_t)p->fd_offsets[fd], (uint32_t)count, (uint8_t*)buf);
     p->fd_offsets[fd] += n;
@@ -355,17 +383,29 @@ static int64_t lx64_read(uint64_t fd, char *buf, uint64_t count) {
 }
 
 static int64_t lx64_write(uint64_t fd, const char *buf, uint64_t count) {
+    process_t *p = process_current();
     if (fd == 1 || fd == 2) {
+        if (p && p->stdout_pipe) {
+            /* Route output to the GUI terminal pipe */
+            uint64_t i;
+            for (i = 0; i < count; i++) {
+                if (p->stdout_pipe->len < TERM_PIPE_SIZE) {
+                    p->stdout_pipe->buf[p->stdout_pipe->head] = (uint8_t)buf[i];
+                    p->stdout_pipe->head = (p->stdout_pipe->head + 1) % TERM_PIPE_SIZE;
+                    p->stdout_pipe->len++;
+                }
+            }
+            return (int64_t)count;
+        }
+        /* Fallback: VGA text + serial debug */
         uint64_t i;
         for (i = 0; i < count; i++) vga_putchar(buf[i]);
-        /* Also to serial for debugging */
         for (i = 0; i < count && i < 256; i++) {
             while (!(inb(0x3FD)&0x20)) {}
             outb(0x3F8, (uint8_t)buf[i]);
         }
         return (int64_t)count;
     }
-    process_t *p = process_current();
     if (!p || fd >= MAX_FDS || !p->fds[fd]) return ERR(EBADF);
     uint32_t n = vfs_write(p->fds[fd], (uint32_t)p->fd_offsets[fd], (uint32_t)count, (const uint8_t*)buf);
     p->fd_offsets[fd] += n;

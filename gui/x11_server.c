@@ -60,6 +60,62 @@ static x11_win_t *alloc_win(uint32_t id) {
     return &g_wins[g_nwins++];
 }
 
+/* ── Pixmaps ─────────────────────────────────────────────────────────────── */
+#define X11_MAX_PIXMAPS   32
+#define X11_PIXMAP_MAX_SZ (4*1024*1024)  /* 4 MB max per pixmap */
+
+typedef struct {
+    uint32_t  id;
+    uint16_t  w, h;
+    uint8_t   depth;
+    bool      used;
+    uint32_t *pixels;   /* kmalloc'd BGRA buffer, NULL if too large */
+} x11_pixmap_t;
+
+static x11_pixmap_t g_pixmaps[X11_MAX_PIXMAPS];
+static int          g_npixmaps = 0;
+
+static x11_pixmap_t *find_pixmap(uint32_t id) {
+    int i;
+    for (i = 0; i < g_npixmaps; i++) if (g_pixmaps[i].id == id && g_pixmaps[i].used) return &g_pixmaps[i];
+    return 0;
+}
+
+static x11_pixmap_t *alloc_pixmap(uint32_t id, uint16_t w, uint16_t h, uint8_t depth) {
+    if (g_npixmaps >= X11_MAX_PIXMAPS) return 0;
+    x11_pixmap_t *pm = &g_pixmaps[g_npixmaps++];
+    memset(pm, 0, sizeof(*pm));
+    pm->id = id; pm->w = w; pm->h = h; pm->depth = depth; pm->used = true;
+    uint32_t sz = (uint32_t)w * h * 4;
+    pm->pixels = (sz > 0 && sz <= X11_PIXMAP_MAX_SZ) ? (uint32_t*)kmalloc(sz) : 0;
+    if (pm->pixels) memset(pm->pixels, 0, sz);
+    return pm;
+}
+
+/* ── RENDER pictures ─────────────────────────────────────────────────────── */
+#define X11_MAX_PICTURES 64
+
+typedef struct {
+    uint32_t id;
+    uint32_t drawable;  /* window or pixmap XID */
+    bool     used;
+} x11_pic_t;
+
+static x11_pic_t g_pics[X11_MAX_PICTURES];
+static int       g_npics = 0;
+
+static x11_pic_t *find_pic(uint32_t id) {
+    int i;
+    for (i = 0; i < g_npics; i++) if (g_pics[i].id == id && g_pics[i].used) return &g_pics[i];
+    return 0;
+}
+
+static x11_pic_t *alloc_pic(uint32_t id, uint32_t drawable) {
+    if (g_npics >= X11_MAX_PICTURES) return 0;
+    g_pics[g_npics].id = id; g_pics[g_npics].drawable = drawable; g_pics[g_npics].used = true;
+    return &g_pics[g_npics++];
+}
+
 /* ── GCs ──────────────────────────────────────────────────────────────────── */
 typedef struct {
     uint32_t id;
@@ -554,19 +610,28 @@ static void handle_fill_rect(const uint8_t *req, uint32_t len) {
     }
 }
 
+/* Forward declaration for put_image_to_pixmap (defined later) */
+static bool put_image_to_pixmap(uint32_t drawable, int16_t dx, int16_t dy,
+                                  uint16_t w, uint16_t h, const uint8_t *data, uint8_t bpp);
+
 /* opcode 72: PutImage (ZPixmap only) */
 static void handle_put_image(const uint8_t *req) {
-    uint8_t  format   = req[1];     /* 0=Bitmap,1=XYPixmap,2=ZPixmap */
+    uint8_t  format   = req[1];
     uint32_t drawable = in_u32_at(req + 4);
     uint32_t gc_id    = in_u32_at(req + 8);
     uint16_t width    = in_u16_at(req + 12);
     uint16_t height   = in_u16_at(req + 14);
     int16_t  dst_x    = (int16_t)in_u16_at(req + 16);
     int16_t  dst_y    = (int16_t)in_u16_at(req + 18);
-    (void)drawable; (void)gc_id;
+    uint8_t  bpp      = req[21];  /* bits-per-pixel */
+    (void)gc_id;
     if (format != 2 || width == 0 || height == 0) return;
-    const uint32_t *pixels = (const uint32_t*)(req + 24);
-    fb_blit((int)dst_x, (int)dst_y, (int)width, (int)height, (uint32_t*)pixels);
+    const uint8_t *pixels = req + 24;
+    /* Try pixmap first */
+    if (put_image_to_pixmap(drawable, dst_x, dst_y, width, height, pixels, bpp)) return;
+    /* Fall back: blit directly to framebuffer */
+    if (bpp == 32)
+        fb_blit((int)dst_x, (int)dst_y, (int)width, (int)height, (uint32_t*)pixels);
 }
 
 /* opcode 74: PolyText8 / opcode 76: ImageText8 */
@@ -623,7 +688,6 @@ static void handle_query_extension(const uint8_t *req) {
     /* Extensions we support (stub) */
     uint8_t present = 0, major_op = 0, first_event = 0, first_error = 0;
     if (strcmp(tmp, "BIG-REQUESTS") == 0)    { present=1; major_op=133; }
-    if (strcmp(tmp, "MIT-SHM") == 0)         { present=1; major_op=130; first_event=65; }
     if (strcmp(tmp, "RENDER") == 0)          { present=1; major_op=139; }
     if (strcmp(tmp, "Composite") == 0)       { present=1; major_op=142; }
     if (strcmp(tmp, "XFIXES") == 0)          { present=1; major_op=138; }
@@ -718,6 +782,263 @@ static void handle_extension_stub(void) {
     flush_out();
 }
 
+/* Blit pixmap pixels to framebuffer at given screen position */
+static void blit_pixmap_to_screen(x11_pixmap_t *pm, int16_t dx, int16_t dy,
+                                   int16_t sx, int16_t sy, uint16_t w, uint16_t h) {
+    if (!pm || !pm->pixels) return;
+    extern framebuffer_t fb;
+    int i, j;
+    for (j = 0; j < h; j++) {
+        int sy2 = (int)sy + j;
+        int dy2 = (int)dy + j;
+        if (sy2 < 0 || sy2 >= (int)pm->h) continue;
+        if (dy2 < 0 || dy2 >= (int)fb.height) continue;
+        for (i = 0; i < w; i++) {
+            int sx2 = (int)sx + i;
+            int dx2 = (int)dx + i;
+            if (sx2 < 0 || sx2 >= (int)pm->w) continue;
+            if (dx2 < 0 || dx2 >= (int)fb.width) continue;
+            uint32_t pixel = pm->pixels[(uint32_t)sy2 * pm->w + (uint32_t)sx2];
+            fb_putpixel(dx2, dy2, pixel);
+        }
+    }
+}
+
+/* opcode 53: CreatePixmap */
+static void handle_create_pixmap(const uint8_t *req) {
+    uint8_t  depth = req[1];
+    uint32_t pid   = in_u32_at(req + 4);
+    uint16_t w     = in_u16_at(req + 12);
+    uint16_t h     = in_u16_at(req + 14);
+    (void)in_u32_at(req + 8); /* drawable (ignored) */
+    alloc_pixmap(pid, w, h, depth);
+}
+
+/* opcode 54: FreePixmap */
+static void handle_free_pixmap(const uint8_t *req) {
+    uint32_t pid = in_u32_at(req + 4);
+    int i;
+    for (i = 0; i < g_npixmaps; i++) {
+        if (g_pixmaps[i].id == pid && g_pixmaps[i].used) {
+            if (g_pixmaps[i].pixels) kfree(g_pixmaps[i].pixels);
+            g_pixmaps[i] = g_pixmaps[--g_npixmaps];
+            break;
+        }
+    }
+}
+
+/* opcode 62: CopyArea */
+static void handle_copy_area(const uint8_t *req) {
+    uint32_t src = in_u32_at(req +  4);
+    uint32_t dst = in_u32_at(req +  8);
+    int16_t  sx  = (int16_t)in_u16_at(req + 16);
+    int16_t  sy  = (int16_t)in_u16_at(req + 18);
+    int16_t  dx  = (int16_t)in_u16_at(req + 20);
+    int16_t  dy  = (int16_t)in_u16_at(req + 22);
+    uint16_t w   = in_u16_at(req + 24);
+    uint16_t h   = in_u16_at(req + 26);
+    (void)dst;  /* if dst is a window, blit to framebuffer */
+    x11_pixmap_t *pm = find_pixmap(src);
+    if (pm) blit_pixmap_to_screen(pm, dx, dy, sx, sy, w, h);
+}
+
+/* Redirect PutImage to a pixmap if drawable is a pixmap id */
+static bool put_image_to_pixmap(uint32_t drawable, int16_t dx, int16_t dy,
+                                  uint16_t w, uint16_t h, const uint8_t *data, uint8_t bpp) {
+    x11_pixmap_t *pm = find_pixmap(drawable);
+    if (!pm || !pm->pixels) return false;
+    if (bpp != 32) return false;
+    int i, j;
+    for (j = 0; j < h; j++) {
+        int dy2 = dy + j;
+        if (dy2 < 0 || dy2 >= (int)pm->h) continue;
+        for (i = 0; i < w; i++) {
+            int dx2 = dx + i;
+            if (dx2 < 0 || dx2 >= (int)pm->w) continue;
+            uint32_t pixel = in_u32_at(data + ((uint32_t)j * w + (uint32_t)i) * 4);
+            pm->pixels[(uint32_t)dy2 * pm->w + (uint32_t)dx2] = pixel;
+        }
+    }
+    return true;
+}
+
+/* ── RENDER extension (major opcode 139) ─────────────────────────────────── */
+static void handle_render_ext(const uint8_t *req, uint32_t len) {
+    uint8_t minor = req[1];
+    (void)len;
+    switch (minor) {
+    case 0: /* QueryVersion */ {
+        reply_start(0);
+        out_u32(0);
+        out_u32(0); out_u32(11);  /* major=0, minor=11 */
+        out_zero(16);
+        flush_out();
+        break;
+    }
+    case 1: /* QueryPictFormats */ {
+        /* Emit one TrueColor BGRA 32bpp format */
+        uint32_t nformats = 1;
+        uint32_t nscreens = 1;
+        uint32_t ndepths  = 1;
+        uint32_t nvisuals = 1;
+        uint32_t data_len = 7 /* formats */ + 8 /* screen hdr */ +
+                            2 /* depth hdr */ + 4 /* visual */;
+        reply_start(0);
+        out_u32(data_len);
+        out_u32(nformats);
+        out_u32(nscreens);
+        out_u32(0);  /* ndepths (sum) */
+        out_u32(0);  /* nvisuals (sum) */
+        out_u32(0);  /* pad */
+        /* Format record: id, type=DirectColor(1), depth=32, pad */
+        out_u32(0x50);      /* format ID */
+        out_u8(1);          /* Direct */
+        out_u8(32);         /* depth */
+        out_u16(0);         /* pad */
+        /* direct: shift/mask for A,R,G,B */
+        out_u16(24); out_u16(0xFF); /* alpha */
+        out_u16(16); out_u16(0xFF); /* red */
+        out_u16(8);  out_u16(0xFF); /* green */
+        out_u16(0);  out_u16(0xFF); /* blue */
+        out_u32(0);  /* colormap = None */
+        /* Screen */
+        out_u32(ROOT_WIN_ID); /* fallback */
+        out_u32(0x50);        /* format */
+        out_u32(ndepths);
+        /* Depth */
+        out_u8(32); out_u8(0); out_u16((uint16_t)nvisuals); out_u32(0);
+        /* Visual */
+        out_u32(ROOT_VISUAL);
+        out_u32(0x50); /* format */
+        flush_out();
+        break;
+    }
+    case 4: /* CreatePicture */ {
+        uint32_t pic     = in_u32_at(req + 4);
+        uint32_t drawable = in_u32_at(req + 8);
+        alloc_pic(pic, drawable);
+        /* no reply */
+        break;
+    }
+    case 5: /* ChangePicture */ break; /* no reply */
+    case 7: /* FreePicture */ {
+        uint32_t pic = in_u32_at(req + 4);
+        int i;
+        for (i = 0; i < g_npics; i++)
+            if (g_pics[i].id == pic) { g_pics[i] = g_pics[--g_npics]; break; }
+        break;
+    }
+    case 8: /* Composite */ {
+        /* op=req[1] already used as minor; re-read */
+        uint8_t op = req[4];  /* PictOp */
+        uint32_t src_pic = in_u32_at(req + 8);
+        /* mask_pic = req+12 (ignored) */
+        uint32_t dst_pic = in_u32_at(req + 16);
+        int16_t src_x = (int16_t)in_u16_at(req + 20);
+        int16_t src_y = (int16_t)in_u16_at(req + 22);
+        int16_t dst_x = (int16_t)in_u16_at(req + 28);
+        int16_t dst_y = (int16_t)in_u16_at(req + 30);
+        uint16_t w = in_u16_at(req + 32);
+        uint16_t h = in_u16_at(req + 34);
+        (void)op;
+        x11_pic_t *sp = find_pic(src_pic);
+        x11_pic_t *dp = find_pic(dst_pic);
+        if (sp && dp) {
+            /* Src is a pixmap? Blit it to screen */
+            x11_pixmap_t *pm = find_pixmap(sp->drawable);
+            if (pm) blit_pixmap_to_screen(pm, dst_x, dst_y, src_x, src_y, w, h);
+        }
+        break;
+    }
+    case 23: /* SetPictureFilter */ break; /* no reply */
+    case 26: /* FillRectangles */ {
+        /* Similar to PolyFillRectangle but on a picture */
+        uint32_t dst_pic = in_u32_at(req + 8);
+        x11_pic_t *dp = find_pic(dst_pic);
+        /* color: a,r,g,b each 16-bit at offset 12 */
+        uint16_t cr = in_u16_at(req + 14);
+        uint16_t cg = in_u16_at(req + 16);
+        uint16_t cb = in_u16_at(req + 18);
+        uint32_t color = ((uint32_t)(cr>>8)<<16)|((uint32_t)(cg>>8)<<8)|(uint32_t)(cb>>8);
+        /* Rectangles start at offset 20 */
+        uint32_t nrects = (len - 20) / 8;
+        uint32_t i;
+        const uint8_t *rp = req + 20;
+        for (i = 0; i < nrects; i++) {
+            int16_t rx = (int16_t)in_u16_at(rp);
+            int16_t ry = (int16_t)in_u16_at(rp+2);
+            uint16_t rw = in_u16_at(rp+4);
+            uint16_t rh = in_u16_at(rp+6);
+            rp += 8;
+            if (dp) {
+                x11_pixmap_t *pm = find_pixmap(dp->drawable);
+                if (pm && pm->pixels) {
+                    uint32_t r2, c2;
+                    for (r2 = 0; r2 < rh; r2++) {
+                        int py = (int)ry + (int)r2;
+                        if (py < 0 || py >= (int)pm->h) continue;
+                        for (c2 = 0; c2 < rw; c2++) {
+                            int px = (int)rx + (int)c2;
+                            if (px < 0 || px >= (int)pm->w) continue;
+                            pm->pixels[(uint32_t)py * pm->w + (uint32_t)px] = color;
+                        }
+                    }
+                } else {
+                    fb_fill_rect((int)rx, (int)ry, (int)rw, (int)rh, color);
+                }
+            } else {
+                fb_fill_rect((int)rx, (int)ry, (int)rw, (int)rh, color);
+            }
+        }
+        break;
+    }
+    /* Glyph sets — stub */
+    case 17: case 18: case 19: case 20: case 21: case 22: break;
+    default: break;
+    }
+}
+
+/* ── XFIXES extension (major opcode 138) ─────────────────────────────────── */
+static void handle_xfixes_ext(const uint8_t *req, uint32_t len) {
+    uint8_t minor = req[1];
+    (void)len;
+    if (minor == 0) { /* QueryVersion */
+        reply_start(0); out_u32(0); out_u32(5); out_u32(0); out_zero(16); flush_out();
+    } else {
+        handle_extension_stub();
+    }
+}
+
+/* ── RANDR extension (major opcode 140) ─────────────────────────────────── */
+static void handle_randr_ext(const uint8_t *req, uint32_t len) {
+    uint8_t minor = req[1];
+    (void)len;
+    if (minor == 0) { /* QueryVersion */
+        reply_start(0); out_u32(0); out_u32(1); out_u32(5); out_zero(16); flush_out();
+    } else {
+        handle_extension_stub();
+    }
+}
+
+/* ── Composite extension (major opcode 142) ─────────────────────────────── */
+static void handle_composite_ext(const uint8_t *req, uint32_t len) {
+    uint8_t minor = req[1];
+    (void)len;
+    if (minor == 0) { /* QueryVersion */
+        reply_start(0); out_u32(0); out_u32(0); out_u32(4); out_zero(16); flush_out();
+    }
+    /* other ops: no reply */
+}
+
+/* ── DAMAGE extension (major opcode 143) ─────────────────────────────────── */
+static void handle_damage_ext(const uint8_t *req, uint32_t len) {
+    uint8_t minor = req[1];
+    (void)len;
+    if (minor == 0) { /* QueryVersion */
+        reply_start(0); out_u32(0); out_u32(1); out_u32(1); out_zero(16); flush_out();
+    }
+}
+
 /* ── X11 server event injection ───────────────────────────────────────────── */
 static uint32_t g_focus_win = ROOT_WIN_ID;
 
@@ -799,14 +1120,16 @@ static uint32_t dispatch_request(const uint8_t *req, uint32_t avail) {
     case  49: /* ListFonts */ handle_extension_stub(); break;
     case  50: handle_create_gc(req); break;
     case  51: handle_change_gc(req); break;
-    case  53: handle_free_gc(req); break;
+    case  53: handle_create_pixmap(req); break;
+    case  54: handle_free_pixmap(req); break;
     case  55: /* ClearArea */ {
         uint32_t wid = in_u32_at(req+4);
         x11_win_t *w = find_win(wid);
         if (w) fb_fill_rect(w->x, w->y, (int)w->w, (int)w->h, w->bg_pixel);
         break;
     }
-    case  60: /* FreePixmap */ break;
+    case  60: handle_free_gc(req); break;
+    case  62: handle_copy_area(req); break;
     case  65: /* FillPoly */ break;
     case  66: handle_fill_rect(req, req_len); break;
     case  72: handle_put_image(req); break;
@@ -832,8 +1155,12 @@ static uint32_t dispatch_request(const uint8_t *req, uint32_t avail) {
     /* BIG-REQUESTS extension (major opcode 133) */
     case 133: handle_big_requests(req); break;
 
-    /* RENDER extension stub */
-    case 139: handle_extension_stub(); break;
+    /* Extension dispatch */
+    case 138: handle_xfixes_ext(req, req_len); break;
+    case 139: handle_render_ext(req, req_len); break;
+    case 140: handle_randr_ext(req, req_len); break;
+    case 142: handle_composite_ext(req, req_len); break;
+    case 143: handle_damage_ext(req, req_len); break;
 
     default:
         /* Unknown request — send BadRequest error for requests that expect replies */
@@ -895,6 +1222,8 @@ void x11_server_init(void) {
     g_seq = 0; g_outlen = 0; g_inlen = 0;
     g_client_connected = false;
     g_focus_win = ROOT_WIN_ID;
+    g_npixmaps = 0;
+    g_npics = 0;
 
     /* Create the root window */
     extern framebuffer_t fb;

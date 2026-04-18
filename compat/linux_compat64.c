@@ -164,6 +164,28 @@
 #define SYS64_GETRANDOM   318
 #define SYS64_MEMFD_CREATE 319
 
+#define SYS64_SETPGID       109
+#define SYS64_GETPGID       121
+#define SYS64_PRCTL         157
+#define SYS64_STATFS        137
+#define SYS64_FSTATFS       138
+#define SYS64_EPOLL_WAIT    232
+#define SYS64_EPOLL_CTL     233
+#define SYS64_INOTIFY_INIT  253
+#define SYS64_INOTIFY_ADD_WATCH 254
+#define SYS64_INOTIFY_RM_WATCH  255
+#define SYS64_TIMERFD_CREATE   283
+#define SYS64_EVENTFD          284
+#define SYS64_TIMERFD_SETTIME  286
+#define SYS64_TIMERFD_GETTIME  287
+#define SYS64_ACCEPT4          288
+#define SYS64_SIGNALFD4        289
+#define SYS64_EVENTFD2         290
+#define SYS64_EPOLL_CREATE1    291
+#define SYS64_INOTIFY_INIT1    294
+#define SYS64_EPOLL_CREATE     213
+#define SYS64_MEMBARRIER       324
+
 /* ── Linux stat structs ──────────────────────────────────────────────────── */
 typedef struct {
     uint64_t st_dev;
@@ -1586,12 +1608,421 @@ bool lx64_ksvc_has_client(int svc) {
     return g_ksvcs[svc].active && g_ksvcs[svc].client_uidx >= 0;
 }
 
+/* ── eventfd ─────────────────────────────────────────────────────────────── */
+#define MAX_EVENTFDS 16
+#define EFD_SEMAPHORE 1
+#define EFD_NONBLOCK  0x800
+#define EFD_CLOEXEC   0x80000
+
+typedef struct { bool used; uint64_t value; uint32_t flags; } eventfd_t;
+static eventfd_t eventfds[MAX_EVENTFDS];
+static vfs_node_t eventfd_nodes[MAX_EVENTFDS];
+
+static uint32_t eventfd_read_fn(vfs_node_t *n, uint32_t off, uint32_t sz, uint8_t *buf) {
+    (void)off;
+    if (sz < 8) return 0;
+    int idx = (int)(n->impl & 0xFF);
+    if (idx < 0 || idx >= MAX_EVENTFDS) return 0;
+    eventfd_t *efd = &eventfds[idx];
+    if (efd->value == 0) return 0;
+    uint64_t val = (efd->flags & EFD_SEMAPHORE) ? 1 : efd->value;
+    if (efd->flags & EFD_SEMAPHORE) efd->value--; else efd->value = 0;
+    memcpy(buf, &val, 8);
+    return 8;
+}
+
+static uint32_t eventfd_write_fn(vfs_node_t *n, uint32_t off, uint32_t sz, const uint8_t *buf) {
+    (void)off;
+    if (sz < 8) return 0;
+    int idx = (int)(n->impl & 0xFF);
+    if (idx < 0 || idx >= MAX_EVENTFDS) return 0;
+    uint64_t val; memcpy(&val, buf, 8);
+    eventfds[idx].value += val;
+    return 8;
+}
+
+static int64_t lx64_eventfd2(uint64_t initval, int flags) {
+    process_t *p = process_current();
+    if (!p) return ERR(ENOMEM);
+    int fd = find_free_fd(p);
+    if (fd < 0) return ERR(EMFILE);
+    int i;
+    for (i = 0; i < MAX_EVENTFDS; i++) if (!eventfds[i].used) break;
+    if (i >= MAX_EVENTFDS) return ERR(ENFILE);
+    eventfds[i].used = true; eventfds[i].value = initval; eventfds[i].flags = (uint32_t)flags;
+    memset(&eventfd_nodes[i], 0, sizeof(vfs_node_t));
+    memcpy(eventfd_nodes[i].name, "eventfd", 8);
+    eventfd_nodes[i].flags = VFS_CHARDEV;
+    eventfd_nodes[i].impl  = 0xED00 | (uint32_t)i;
+    eventfd_nodes[i].read  = eventfd_read_fn;
+    eventfd_nodes[i].write = eventfd_write_fn;
+    p->fds[fd] = &eventfd_nodes[i];
+    return fd;
+}
+
+/* ── timerfd ─────────────────────────────────────────────────────────────── */
+#define MAX_TIMERFDS 8
+typedef struct {
+    bool     used;
+    bool     armed;
+    uint64_t start_tick;
+    uint64_t initial_ms;
+    uint64_t interval_ms;
+} timerfd_t;
+static timerfd_t timerfds[MAX_TIMERFDS];
+static vfs_node_t timerfd_nodes[MAX_TIMERFDS];
+
+typedef struct { int64_t tv_sec; int64_t tv_nsec; } lx_timespec2_t;
+typedef struct { lx_timespec2_t it_interval; lx_timespec2_t it_value; } lx_itimerspec2_t;
+
+static uint32_t timerfd_read_fn(vfs_node_t *n, uint32_t off, uint32_t sz, uint8_t *buf) {
+    (void)off;
+    if (sz < 8) return 0;
+    int idx = (int)(n->impl & 0xFF);
+    if (idx < 0 || idx >= MAX_TIMERFDS) return 0;
+    timerfd_t *tfd = &timerfds[idx];
+    if (!tfd->armed) return 0;
+    uint64_t elapsed = timer_get_ticks() - tfd->start_tick;
+    if (elapsed < tfd->initial_ms) return 0;
+    uint64_t exp = 1;
+    if (tfd->interval_ms > 0) {
+        exp = (elapsed - tfd->initial_ms) / tfd->interval_ms + 1;
+        tfd->start_tick += tfd->initial_ms + (exp - 1) * tfd->interval_ms;
+        tfd->initial_ms  = tfd->interval_ms;
+    } else {
+        tfd->armed = false;
+    }
+    memcpy(buf, &exp, 8);
+    return 8;
+}
+
+static int64_t lx64_timerfd_create(int clockid, int flags) {
+    (void)clockid; (void)flags;
+    process_t *p = process_current();
+    if (!p) return ERR(ENOMEM);
+    int fd = find_free_fd(p);
+    if (fd < 0) return ERR(EMFILE);
+    int i;
+    for (i = 0; i < MAX_TIMERFDS; i++) if (!timerfds[i].used) break;
+    if (i >= MAX_TIMERFDS) return ERR(ENFILE);
+    timerfds[i].used = true; timerfds[i].armed = false;
+    memset(&timerfd_nodes[i], 0, sizeof(vfs_node_t));
+    memcpy(timerfd_nodes[i].name, "timerfd", 8);
+    timerfd_nodes[i].flags = VFS_CHARDEV;
+    timerfd_nodes[i].impl  = 0xFD00 | (uint32_t)i;
+    timerfd_nodes[i].read  = timerfd_read_fn;
+    p->fds[fd] = &timerfd_nodes[i];
+    return fd;
+}
+
+static int64_t lx64_timerfd_settime(uint64_t fd, int flags, lx_itimerspec2_t *nv,
+                                     lx_itimerspec2_t *ov) {
+    (void)flags; (void)ov;
+    if (!nv) return ERR(EFAULT);
+    process_t *p = process_current();
+    if (!p || fd >= MAX_FDS || !p->fds[fd]) return ERR(EBADF);
+    if ((p->fds[fd]->impl & 0xFF00) != 0xFD00) return ERR(EBADF);
+    int idx = (int)(p->fds[fd]->impl & 0xFF);
+    timerfd_t *tfd = &timerfds[idx];
+    int64_t ims = nv->it_value.tv_sec * 1000 + nv->it_value.tv_nsec / 1000000;
+    int64_t pms = nv->it_interval.tv_sec * 1000 + nv->it_interval.tv_nsec / 1000000;
+    if (ims <= 0 && pms <= 0) { tfd->armed = false; return 0; }
+    tfd->armed      = true;
+    tfd->start_tick = timer_get_ticks();
+    tfd->initial_ms = (uint64_t)(ims > 0 ? ims : 0);
+    tfd->interval_ms = (uint64_t)(pms > 0 ? pms : 0);
+    return 0;
+}
+
+static int64_t lx64_timerfd_gettime(uint64_t fd, lx_itimerspec2_t *cur) {
+    if (!cur) return ERR(EFAULT);
+    process_t *p = process_current();
+    if (!p || fd >= MAX_FDS || !p->fds[fd]) return ERR(EBADF);
+    if ((p->fds[fd]->impl & 0xFF00) != 0xFD00) return ERR(EBADF);
+    int idx = (int)(p->fds[fd]->impl & 0xFF);
+    timerfd_t *tfd = &timerfds[idx];
+    memset(cur, 0, sizeof(*cur));
+    if (tfd->armed && tfd->interval_ms > 0) {
+        cur->it_interval.tv_sec  = (int64_t)(tfd->interval_ms / 1000);
+        cur->it_interval.tv_nsec = (int64_t)((tfd->interval_ms % 1000) * 1000000);
+    }
+    if (tfd->armed) {
+        uint64_t elapsed = timer_get_ticks() - tfd->start_tick;
+        int64_t rem = (int64_t)tfd->initial_ms - (int64_t)elapsed;
+        if (rem > 0) {
+            cur->it_value.tv_sec  = rem / 1000;
+            cur->it_value.tv_nsec = (rem % 1000) * 1000000;
+        }
+    }
+    return 0;
+}
+
+/* ── epoll ────────────────────────────────────────────────────────────────── */
+#define EPOLLIN      0x001
+#define EPOLLOUT     0x004
+#define EPOLLERR     0x008
+#define EPOLLHUP     0x010
+#define EPOLLRDHUP   0x2000
+#define EPOLLET      (1u<<31)
+#define EPOLL_CTL_ADD 1
+#define EPOLL_CTL_DEL 2
+#define EPOLL_CTL_MOD 3
+
+typedef struct { uint32_t events; uint64_t data; } epoll_event_t;
+typedef struct { uint32_t fd; uint32_t events; uint64_t data; } ewatch_t;
+
+#define MAX_EPOLL_SETS   8
+#define MAX_EPOLL_WATCH  32
+
+typedef struct {
+    bool     used;
+    ewatch_t watches[MAX_EPOLL_WATCH];
+    int      nwatches;
+} epoll_set_t;
+
+static epoll_set_t g_epoll[MAX_EPOLL_SETS];
+static vfs_node_t  g_epoll_nodes[MAX_EPOLL_SETS];
+
+static int alloc_epoll(void) {
+    int i;
+    for (i = 0; i < MAX_EPOLL_SETS; i++) if (!g_epoll[i].used) return i;
+    return -1;
+}
+
+static int epoll_idx_from_fd(process_t *p, uint64_t fd) {
+    if (!p || fd >= MAX_FDS || !p->fds[fd]) return -1;
+    uint32_t impl = p->fds[fd]->impl;
+    if ((impl & 0xFF00) != 0xEF00) return -1;
+    return (int)(impl & 0xFF);
+}
+
+static int64_t lx64_epoll_create1(int flags) {
+    (void)flags;
+    process_t *p = process_current();
+    if (!p) return ERR(ENOMEM);
+    int fd = find_free_fd(p);
+    if (fd < 0) return ERR(EMFILE);
+    int eidx = alloc_epoll();
+    if (eidx < 0) return ERR(ENFILE);
+    g_epoll[eidx].used = true;
+    g_epoll[eidx].nwatches = 0;
+    memset(&g_epoll_nodes[eidx], 0, sizeof(vfs_node_t));
+    memcpy(g_epoll_nodes[eidx].name, "epoll", 6);
+    g_epoll_nodes[eidx].flags = VFS_CHARDEV;
+    g_epoll_nodes[eidx].impl  = 0xEF00 | (uint32_t)eidx;
+    p->fds[fd] = &g_epoll_nodes[eidx];
+    return fd;
+}
+
+static int64_t lx64_epoll_ctl(uint64_t epfd, int op, uint64_t fd, epoll_event_t *ev) {
+    process_t *p = process_current();
+    int eidx = epoll_idx_from_fd(p, epfd);
+    if (eidx < 0) return ERR(EBADF);
+    epoll_set_t *es = &g_epoll[eidx];
+    int i;
+    if (op == EPOLL_CTL_ADD || op == EPOLL_CTL_MOD) {
+        if (!ev) return ERR(EFAULT);
+        for (i = 0; i < es->nwatches; i++) {
+            if (es->watches[i].fd == (uint32_t)fd) {
+                es->watches[i].events = ev->events;
+                es->watches[i].data   = ev->data;
+                return 0;
+            }
+        }
+        if (es->nwatches >= MAX_EPOLL_WATCH) return ERR(ENOSPC);
+        es->watches[es->nwatches].fd     = (uint32_t)fd;
+        es->watches[es->nwatches].events = ev->events;
+        es->watches[es->nwatches].data   = ev->data;
+        es->nwatches++;
+    } else if (op == EPOLL_CTL_DEL) {
+        for (i = 0; i < es->nwatches; i++) {
+            if (es->watches[i].fd == (uint32_t)fd) {
+                es->watches[i] = es->watches[--es->nwatches];
+                return 0;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Check if an fd has data available for reading */
+static bool epoll_fd_readable(process_t *p, uint32_t fd) {
+    if (!p) return false;
+    if (fd == 0) return p->stdin_pipe && p->stdin_pipe->len > 0;
+    if (fd >= MAX_FDS || !p->fds[fd]) return false;
+    vfs_node_t *node = p->fds[fd];
+    uint32_t impl = node->impl;
+    /* pipe */
+    if (node->flags == VFS_PIPE && impl < (uint32_t)MAX_PIPES)
+        return (pipes[impl].wr - pipes[impl].rd) > 0;
+    /* eventfd */
+    if ((impl & 0xFF00) == 0xED00) {
+        int ei = (int)(impl & 0xFF);
+        return ei < MAX_EVENTFDS && eventfds[ei].value > 0;
+    }
+    /* timerfd */
+    if ((impl & 0xFF00) == 0xFD00) {
+        int ti = (int)(impl & 0xFF);
+        if (ti >= MAX_TIMERFDS || !timerfds[ti].armed) return false;
+        return (timer_get_ticks() - timerfds[ti].start_tick) >= timerfds[ti].initial_ms;
+    }
+    /* unix socket */
+    if (node->flags == VFS_CHARDEV && impl < (uint32_t)MAX_KRYPX_SOCKETS) {
+        krypx_sock_t *ks = &ksocks[impl];
+        if (ks->type == KRYPX_SOCK_UNIX && ks->idx >= 0)
+            return (unix_socks[ks->idx].buf_write - unix_socks[ks->idx].buf_read) > 0;
+    }
+    return false;
+}
+
+static int64_t lx64_epoll_wait(uint64_t epfd, epoll_event_t *evs, int maxevents,
+                                int timeout_ms) {
+    process_t *p = process_current();
+    int eidx = epoll_idx_from_fd(p, epfd);
+    if (eidx < 0) return ERR(EBADF);
+    if (!evs || maxevents <= 0) return ERR(EINVAL);
+    epoll_set_t *es = &g_epoll[eidx];
+
+    uint64_t t0 = timer_get_ticks();
+    for (;;) {
+        int nready = 0, i;
+        for (i = 0; i < es->nwatches && nready < maxevents; i++) {
+            bool in  = (es->watches[i].events & EPOLLIN)  && epoll_fd_readable(p, es->watches[i].fd);
+            bool out = (es->watches[i].events & EPOLLOUT); /* writes always ready */
+            if (in || out) {
+                evs[nready].events = (in ? (uint32_t)EPOLLIN : 0u) | (out ? (uint32_t)EPOLLOUT : 0u);
+                evs[nready].data   = es->watches[i].data;
+                nready++;
+            }
+        }
+        if (nready > 0) return nready;
+        if (timeout_ms == 0) return 0;
+        if (timeout_ms > 0 && (int64_t)(timer_get_ticks() - t0) >= timeout_ms) return 0;
+        schedule();
+    }
+}
+
+/* ── inotify (stub) ──────────────────────────────────────────────────────── */
+static vfs_node_t g_inotify_node;
+static uint32_t inotify_noop_read(vfs_node_t *n, uint32_t off, uint32_t sz, uint8_t *buf)
+{ (void)n;(void)off;(void)sz;(void)buf; return 0; }
+
+static int64_t lx64_inotify_init1(int flags) {
+    (void)flags;
+    process_t *p = process_current();
+    if (!p) return ERR(ENOMEM);
+    int fd = find_free_fd(p);
+    if (fd < 0) return ERR(EMFILE);
+    memset(&g_inotify_node, 0, sizeof(vfs_node_t));
+    memcpy(g_inotify_node.name, "inotify", 8);
+    g_inotify_node.flags = VFS_CHARDEV;
+    g_inotify_node.impl  = 0x1234;
+    g_inotify_node.read  = inotify_noop_read;
+    p->fds[fd] = &g_inotify_node;
+    return fd;
+}
+
+/* ── prctl ───────────────────────────────────────────────────────────────── */
+#define PR_SET_PDEATHSIG        1
+#define PR_SET_DUMPABLE         4
+#define PR_GET_DUMPABLE         3
+#define PR_SET_NAME            15
+#define PR_GET_NAME            16
+#define PR_SET_CHILD_SUBREAPER 36
+#define PR_SET_SECCOMP         22
+#define PR_CAPBSET_READ        23
+#define PR_SET_NO_NEW_PRIVS    38
+
+static int64_t lx64_prctl(int opt, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3;(void)a4;(void)a5;
+    process_t *p = process_current();
+    if (opt == PR_SET_NAME) {
+        if (!a2) return ERR(EFAULT);
+        if (p) strncpy(p->name, (const char*)(uintptr_t)a2, 15);
+        return 0;
+    }
+    if (opt == PR_GET_NAME) {
+        if (!a2) return ERR(EFAULT);
+        strncpy((char*)(uintptr_t)a2, p ? p->name : "unknown", 15);
+        return 0;
+    }
+    if (opt == PR_GET_DUMPABLE) return 1;
+    /* All others: silently succeed */
+    return 0;
+}
+
+/* ── setpgid / getpgid ───────────────────────────────────────────────────── */
+static int64_t lx64_setpgid(uint64_t pid, uint64_t pgid) { (void)pid;(void)pgid; return 0; }
+static int64_t lx64_getpgid(uint64_t pid) {
+    (void)pid;
+    process_t *p = process_current();
+    return p ? (int64_t)p->pid : 1;
+}
+
+/* ── statfs ──────────────────────────────────────────────────────────────── */
+typedef struct {
+    int64_t  f_type;
+    int64_t  f_bsize;
+    uint64_t f_blocks, f_bfree, f_bavail;
+    uint64_t f_files, f_ffree;
+    uint64_t f_fsid[2];
+    int64_t  f_namelen;
+    int64_t  f_frsize;
+    int64_t  f_flags;
+    int64_t  f_spare[4];
+} linux64_statfs_t;
+
+static int64_t lx64_statfs(const char *path, linux64_statfs_t *st) {
+    (void)path;
+    if (!st) return ERR(EFAULT);
+    memset(st, 0, sizeof(*st));
+    st->f_type    = 0x4d44;  /* MSDOS_SUPER_MAGIC (FAT32) */
+    st->f_bsize   = 4096;
+    st->f_blocks  = pmm_get_total_pages();
+    st->f_bfree   = pmm_get_free_pages();
+    st->f_bavail  = st->f_bfree;
+    st->f_namelen = 255;
+    return 0;
+}
+
+/* ── accept4 ─────────────────────────────────────────────────────────────── */
+static int64_t lx64_accept4(uint64_t sockfd, linux64_sockaddr_t *addr,
+                              uint64_t *addrlen, int flags) {
+    (void)addr; (void)addrlen; (void)flags;
+    (void)sockfd;
+    return ERR(EAGAIN);
+}
+
+/* ── signalfd4 (stub) ────────────────────────────────────────────────────── */
+static vfs_node_t g_sigfd_node;
+static uint32_t sigfd_noop_read(vfs_node_t *n, uint32_t off, uint32_t sz, uint8_t *buf)
+{ (void)n;(void)off;(void)sz;(void)buf; return 0; }
+
+static int64_t lx64_signalfd4(int64_t fd, void *mask, uint64_t sigsz, int flags) {
+    (void)mask;(void)sigsz;(void)flags;
+    process_t *p = process_current();
+    if (!p) return ERR(ENOMEM);
+    if (fd >= 0) return fd; /* reuse existing fd */
+    int newfd = find_free_fd(p);
+    if (newfd < 0) return ERR(EMFILE);
+    memset(&g_sigfd_node, 0, sizeof(vfs_node_t));
+    memcpy(g_sigfd_node.name, "signalfd", 9);
+    g_sigfd_node.flags = VFS_CHARDEV;
+    g_sigfd_node.impl  = 0x5601;
+    g_sigfd_node.read  = sigfd_noop_read;
+    p->fds[newfd] = &g_sigfd_node;
+    return newfd;
+}
+
 /* ── init ────────────────────────────────────────────────────────────────── */
 
 void linux_syscall64_init(void) {
     memset(ksocks, 0, sizeof(ksocks));
     memset(unix_socks, 0, sizeof(unix_socks));
     memset(pipes, 0, sizeof(pipes));
+    memset(g_epoll, 0, sizeof(g_epoll));
+    memset(eventfds, 0, sizeof(eventfds));
+    memset(timerfds, 0, sizeof(timerfds));
     lx64_rand_state = timer_get_ticks() ^ 0xBEEFCAFE12345678ULL;
     ser64("[LX64] syscall64 layer ready\r\n");
 }
@@ -1673,6 +2104,9 @@ void linux_syscall64_handler(syscall64_frame_t *f) {
     case SYS64_WAIT4:      ret = lx64_wait4(f,(int64_t)f->rdi,(int32_t*)(uintptr_t)f->rsi,f->rdx,(void*)(uintptr_t)f->r10); break;
     case SYS64_KILL:       ret = lx64_kill((int64_t)f->rdi,(int64_t)f->rsi); break;
     case SYS64_TGKILL:     ret = 0; break;
+    case SYS64_SETPGID:    ret = lx64_setpgid(f->rdi,f->rsi); break;
+    case SYS64_GETPGID:    ret = lx64_getpgid(f->rdi); break;
+    case SYS64_PRCTL:      ret = lx64_prctl((int)f->rdi,f->rsi,f->rdx,f->r10,f->r8); break;
     case SYS64_EXECVE:     ret = lx64_execve(f,(const char*)(uintptr_t)f->rdi,(uint64_t*)(uintptr_t)f->rsi,(uint64_t*)(uintptr_t)f->rdx); break;
     case SYS64_SCHED_YIELD: ret = 0; schedule(); break;
     case SYS64_SET_TID_ADDR: ret = lx64_set_tid_address((uint64_t*)(uintptr_t)f->rdi); break;
@@ -1739,15 +2173,35 @@ void linux_syscall64_handler(syscall64_frame_t *f) {
     case SYS64_GETSOCKNAME: ret = lx64_getsockname(f->rdi,(linux64_sockaddr_t*)(uintptr_t)f->rsi,(uint64_t*)(uintptr_t)f->rdx); break;
     case SYS64_GETPEERNAME: ret = 0; break;
     case 53: /* socketpair */ ret = ERR(ENOSYS); break;
-    case SYS64_SENDMSG: case SYS64_RECVMSG: ret = ERR(ENOSYS); break;
+    case SYS64_SENDMSG:    ret = lx64_sendto(f->rdi,(const char*)(uintptr_t)f->rsi,f->rdx,0,0,0); break;
+    case SYS64_RECVMSG:    ret = lx64_recvfrom(f->rdi,(char*)(uintptr_t)f->rsi,f->rdx,0,0,0); break;
 
     /* random */
     case SYS64_GETRANDOM:  ret = lx64_getrandom((char*)(uintptr_t)f->rdi,f->rsi,f->rdx); break;
 
     /* misc stubs */
     case 100: /* times */   ret = 0; break;
-    case 290: /* eventfd2 */ ret = ERR(ENOSYS); break;
-    case 302: /* prlimit64 */ ret = 0; break;
+    case SYS64_EVENTFD:        ret = lx64_eventfd2(f->rdi,(int)f->rsi); break;
+    case SYS64_EVENTFD2:       ret = lx64_eventfd2(f->rdi,(int)f->rsi); break;
+    case SYS64_TIMERFD_CREATE: ret = lx64_timerfd_create((int)f->rdi,(int)f->rsi); break;
+    case SYS64_TIMERFD_SETTIME: ret = lx64_timerfd_settime(f->rdi,(int)f->rsi,(lx_itimerspec2_t*)(uintptr_t)f->rdx,(lx_itimerspec2_t*)(uintptr_t)f->r10); break;
+    case SYS64_TIMERFD_GETTIME: ret = lx64_timerfd_gettime(f->rdi,(lx_itimerspec2_t*)(uintptr_t)f->rsi); break;
+    case SYS64_EPOLL_CREATE:   /* fallthrough */
+    case SYS64_EPOLL_CREATE1:  ret = lx64_epoll_create1((int)f->rdi); break;
+    case SYS64_EPOLL_CTL:      ret = lx64_epoll_ctl(f->rdi,(int)f->rsi,f->rdx,(epoll_event_t*)(uintptr_t)f->r10); break;
+    case SYS64_EPOLL_WAIT:     ret = lx64_epoll_wait(f->rdi,(epoll_event_t*)(uintptr_t)f->rsi,(int)f->rdx,(int)f->r10); break;
+    case SYS64_INOTIFY_INIT:   /* fallthrough */
+    case SYS64_INOTIFY_INIT1:  ret = lx64_inotify_init1((int)f->rdi); break;
+    case SYS64_INOTIFY_ADD_WATCH: ret = 1; break; /* stub: return watch descriptor */
+    case SYS64_INOTIFY_RM_WATCH:  ret = 0; break;
+    case SYS64_ACCEPT4:        ret = lx64_accept4(f->rdi,(linux64_sockaddr_t*)(uintptr_t)f->rsi,(uint64_t*)(uintptr_t)f->rdx,(int)f->r10); break;
+    case SYS64_SIGNALFD4:      ret = lx64_signalfd4((int64_t)f->rdi,(void*)(uintptr_t)f->rsi,f->rdx,(int)f->r10); break;
+    case SYS64_STATFS:         ret = lx64_statfs((const char*)(uintptr_t)f->rdi,(linux64_statfs_t*)(uintptr_t)f->rsi); break;
+    case SYS64_FSTATFS:        ret = lx64_statfs(0,(linux64_statfs_t*)(uintptr_t)f->rsi); break;
+    case SYS64_MEMBARRIER:     ret = 0; break;
+    case 302: /* prlimit64 */  ret = 0; break;
+    case 149: /* mlock */      ret = 0; break;
+    case 150: /* munlock */    ret = 0; break;
     case 334: /* rseq */    ret = ERR(ENOSYS); break;
     case 435: /* clone3 */  ret = ERR(ENOSYS); break;
 
